@@ -29,6 +29,7 @@ class ValidationCategory(str, Enum):
     NOT_ELIGIBLE = "not_eligible"            # action is state mein structurally allowed nahi
     MISSING_PREREQUISITE = "missing_prerequisite"  # context precondition poora nahi
     UNKNOWN_REQUIREMENT = "unknown_requirement"    # config/design error: unknown requires-key
+    DNC_CONFLICT = "dnc_conflict"            # DNC pending — non-DNC action defensively rejected
 
 
 class ValidationResult(BaseModel):

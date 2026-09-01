@@ -138,11 +138,32 @@ class ActionValidator:
         """
         ctx: Mapping[str, Any] = context or {}
 
+        # 0. DNC defensive safety-net. Agar context bataye ke client ne DNC maanga
+        #    hai (intent do_not_call), to koi bhi non-DNC/non-terminating action
+        #    defensively reject — chahe woh structurally eligible ho. Ye primary
+        #    decision NAHI hai (woh resolve_priority_action karta hai); ye us
+        #    decision ke bypass hone ki soorat mein ek safety net hai.
+        if ctx.get("dnc_pending") and action not in (
+            AgentAction.MARK_DNC,
+            AgentAction.END_CALL,
+        ):
+            return ValidationResult.rejected(
+                ValidationCategory.DNC_CONFLICT,
+                reason=f"{action.value} rejected: do-not-call is pending",
+            )
+
         state_def = self._config.states.get(state)
 
+        # Terminating/escape actions (MARK_DNC, END_CALL) state ke entry-
+        # preconditions se exempt hain — ye state se BAHAR nikalne ke liye hain,
+        # wahan rehne/aage badhne ke liye nahi. DNC har active state se kaam kare
+        # chahe us state ki business-preconditions poori hon ya nahi.
+        _terminating = (AgentAction.MARK_DNC, AgentAction.END_CALL)
+
         # 1. State-level entry preconditions. Agar current state ka apna `requires`
-        #    poora nahi, to yahan hona hi invalid tha — koi bhi action reject.
-        if state_def is not None:
+        #    poora nahi, to yahan hona hi invalid tha — koi bhi (non-escape)
+        #    action reject.
+        if state_def is not None and action not in _terminating:
             for requirement in state_def.requires:
                 predicate = _PREREQUISITES.get(requirement)
                 if predicate is None:
@@ -184,18 +205,25 @@ class ActionValidator:
     def as_machine_hook(
         self, context: Mapping[str, Any] | None = None
     ) -> Callable[[TransitionRule, "dict[str, Any]"], bool]:
-        """Adapt this validator to the machine's `validator` hook signature.
+        """LEGACY structural adapter — NOT the canonical validation path.
 
-        Machine ka hook `(rule, context) -> bool` expect karta hai. Ye adapter
-        wahi shape deta hai, andar se prerequisite evaluation reuse karke — taake
-        Sitting 1 ki machine bina rewrite ke isse use kar sake.
+        Canonical live flow validation ke liye `validate(state, action, context)`
+        use karo, jo state-level + transition-level preconditions + DNC safety-net
+        sab check karta hai. Ye adapter machine ke purane `(rule, ctx) -> bool`
+        hook signature ke saath compatible hai, lekin ismein current STATE
+        available nahi — isliye ye SIRF transition-level `requires` enforce karta
+        hai, state-level entry-preconditions ya DNC safety-net NAHI.
+
+        Ise sirf tab use karo jab koi legacy caller machine hook chahta ho. Naya
+        code ko external-validation flow follow karna chahiye:
+        LLM → resolve_priority_action → validate() → machine.apply_transition().
 
         Args:
-            context: Optional read-only context to evaluate against. Agar machine
-                apna context pass kare to woh use hota hai; warna ye default.
+            context: Optional read-only context. Machine apna context pass kare to
+                woh preferred; warna ye default. Function ise mutate nahi karta.
 
         Returns:
-            Callable: A `(rule, ctx) -> bool` hook for machine.apply_transition.
+            Callable: A `(rule, ctx) -> bool` hook (transition-level only).
         """
 
         def _hook(rule: TransitionRule, ctx: dict[str, Any]) -> bool:
