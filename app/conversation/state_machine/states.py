@@ -76,6 +76,36 @@ class StateDefinition:
 
 
 @dataclass(frozen=True)
+class FallbackMapping:
+    """A single deterministic fallback: which safe action + response identifier.
+
+    Attributes:
+        action: Safe recovery action to take.
+        response_key: Stable machine-readable identifier for the response
+            (natural-language wording is filled later by the LLM/prompt layer).
+    """
+
+    action: AgentAction
+    response_key: str
+
+
+@dataclass(frozen=True)
+class FallbackConfig:
+    """All configured fallback mappings.
+
+    Attributes:
+        by_state: State-specific fallbacks (state → mapping).
+        by_category: Category-specific fallbacks (category string → mapping),
+            e.g. dnc_conflict, unknown_requirement. These override by_state.
+        default: The safe-close fallback used when nothing more specific applies.
+    """
+
+    by_state: dict[ConversationState, FallbackMapping]
+    by_category: dict[str, FallbackMapping]
+    default: FallbackMapping
+
+
+@dataclass(frozen=True)
 class MachineConfig:
     """The fully-parsed, validated state machine configuration.
 
@@ -85,6 +115,7 @@ class MachineConfig:
         terminal_states: Set of terminal states.
         limits: Named integer limits (retry/clarification bounds).
         response_policy: Per-state response policy metadata (LLM layer later).
+        fallbacks: Deterministic fallback mappings (Sitting 2C-A).
     """
 
     initial_state: ConversationState
@@ -92,6 +123,7 @@ class MachineConfig:
     terminal_states: frozenset[ConversationState]
     limits: dict[str, int] = field(default_factory=dict)
     response_policy: dict[str, Any] = field(default_factory=dict)
+    fallbacks: FallbackConfig | None = None
 
 
 def _coerce_state(value: str) -> ConversationState:
@@ -264,10 +296,88 @@ def load_config(path: str | Path) -> MachineConfig:
                         f"limit {limit_key!r} in config."
                     )
 
+    # ── fallbacks (Sitting 2C-A) — optional section ──
+    raw_fallbacks = raw.get("fallbacks")
+    fallbacks = (
+        _parse_and_validate_fallbacks(raw_fallbacks, states) if raw_fallbacks else None
+    )
+
     return MachineConfig(
         initial_state=initial_state,
         states=states,
         terminal_states=terminal_states,
         limits=dict(raw.get("limits", {})),
         response_policy=dict(raw.get("response_policy", {})),
+        fallbacks=fallbacks,
     )
+
+
+def _parse_mapping(body: dict[str, Any], where: str) -> FallbackMapping:
+    """Parse one fallback mapping entry, failing fast on problems.
+
+    Args:
+        body: The raw {action, response_key} dict.
+        where: Context string for error messages.
+
+    Returns:
+        FallbackMapping: The parsed mapping.
+
+    Raises:
+        ConfigurationError: On missing/invalid fields.
+    """
+    action_raw = body.get("action")
+    key = body.get("response_key")
+    if action_raw is None or key is None:
+        raise ConfigurationError(
+            f"Fallback {where!r} needs both 'action' and 'response_key'."
+        )
+    if not isinstance(key, str) or not key.strip():
+        raise ConfigurationError(f"Fallback {where!r} response_key must be non-empty.")
+    return FallbackMapping(action=_coerce_action(action_raw), response_key=key)
+
+
+def _parse_and_validate_fallbacks(
+    raw: dict[str, Any], states: dict[ConversationState, StateDefinition]
+) -> FallbackConfig:
+    """Parse fallback config and verify each action is valid for its state.
+
+    Startup validation (guide requirement): har state-specific fallback action us
+    state ke allowed actions mein hona chahiye — warna fail-fast. Isse runtime par
+    "fallback khud invalid" wali surprise nahi hoti.
+
+    Args:
+        raw: The raw 'fallbacks' config section.
+        states: Parsed state definitions, to verify action validity.
+
+    Returns:
+        FallbackConfig: Validated fallback configuration.
+
+    Raises:
+        ConfigurationError: If a state fallback action isn't allowed in its state,
+            or default is missing.
+    """
+    by_state: dict[ConversationState, FallbackMapping] = {}
+    for state_key, body in (raw.get("by_state", {}) or {}).items():
+        state = _coerce_state(state_key)
+        mapping = _parse_mapping(body or {}, f"by_state.{state_key}")
+        # verify the fallback action is structurally allowed in that state.
+        state_def = states.get(state)
+        if state_def is None:
+            raise ConfigurationError(f"Fallback references unknown state {state_key!r}.")
+        if mapping.action not in state_def.allowed_actions:
+            raise ConfigurationError(
+                f"Fallback action {mapping.action.value!r} is not allowed in "
+                f"state {state_key!r}."
+            )
+        by_state[state] = mapping
+
+    by_category: dict[str, FallbackMapping] = {}
+    for cat_key, body in (raw.get("by_category", {}) or {}).items():
+        by_category[cat_key] = _parse_mapping(body or {}, f"by_category.{cat_key}")
+
+    default_raw = raw.get("default")
+    if not default_raw:
+        raise ConfigurationError("Fallback config must define a 'default'.")
+    default = _parse_mapping(default_raw, "default")
+
+    return FallbackConfig(by_state=by_state, by_category=by_category, default=default)

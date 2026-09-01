@@ -41,7 +41,37 @@ response_policy:
     max_sentences: 2
 
 # ---------------------------------------------------------------------------
-# States. Har state define karti hai:
+# Fallback mappings (Sitting 2C-A). Jab validator ek action reject kare, ye
+# deterministic safe recovery choose karne ke liye use hote hain — LLM
+# regeneration ke bina.
+#
+# Har entry: state -> { action, response_key }. response_key ek stable machine-
+# readable identifier hai (natural-language text NAHI — wording baad mein LLM/
+# prompt layer bharega).
+#
+# Startup validation ensure karti hai ke har fallback action apne state mein
+# structurally valid ho (us state ke transitions mein defined ho), warna fail-fast.
+#
+# `dnc_conflict` aur `unknown_requirement` special categories hain (state-
+# independent) — neeche category_fallbacks mein.
+# ---------------------------------------------------------------------------
+fallbacks:
+  # Per-state recovery jab reject hua ho (missing prereq / not eligible).
+  by_state:
+    collect_email: { action: ask_email, response_key: repeat_email }
+    confirm_contact: { action: confirm_email, response_key: confirm_again }
+    schedule_callback: { action: schedule_callback, response_key: clarify_callback_time }
+
+  # Category-driven fallbacks jo state-specific mapping par override karte hain.
+  by_category:
+    # DNC pending par safety-net ne reject kiya -> DNC honor karo, bypass nahi.
+    dnc_conflict: { action: mark_dnc, response_key: acknowledge_dnc }
+    # Config/design error -> koi behavior invent mat karo, safe terminal close.
+    unknown_requirement: { action: end_call, response_key: safe_close }
+
+  # Jab kisi state ke liye koi specific fallback na ho — safe close.
+  default: { action: end_call, response_key: safe_close }
+
 #   - actions: is state mein allowed AgentActions (structural whitelist)
 #   - transitions: action -> target state (+ optional outcome, + requires)
 #   - requires: context preconditions jo Sitting 2 ka validator evaluate karega
