@@ -1,0 +1,57 @@
+[project]
+name = "outbound-agent"
+version = "0.1.0"
+description = "AI outbound lead-qualification agent — state-machine driven, voice via Vapi."
+readme = "README.md"
+requires-python = ">=3.11"
+
+# Core runtime dependencies.
+# Sirf wahi rakhe hain jo abhi (foundation + upcoming brain/LLM/API) chahiye.
+# Voice/queue/sheet extras baad mein optional groups mein add karenge.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Dev/test tooling — `uv sync --extra dev` se install hoga.
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ── Tooling config (config-driven, no scattered rc files) ──
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "N", "D"]   # D = docstring checks
+ignore = ["D203", "D213"]                  # conflicting docstring rules
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
