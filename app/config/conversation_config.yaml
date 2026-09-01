@@ -1,0 +1,154 @@
+# ---------------------------------------------------------------------------
+# Conversation state machine configuration.
+#
+# Ye file state machine ka SOURCE OF TRUTH hai — states, transitions, terminal
+# states, preconditions, aur retry limits sab yahan hain, Python code mein
+# hardcoded NAHI. Behaviour badalne ke liye sirf ye file edit karni hai.
+#
+# Values `ConversationState` aur `AgentAction` enums (app/core/constants.py) se
+# match karni chahiye — startup validation isko enforce karti hai (fail-fast).
+#
+# NOTE:
+#   - `CHECK_HISTORY` state deliberately yahan NAHI hai: history/memory load
+#     karna application operation hai, conversational state nahi. Enum mein
+#     value maujood hai lekin ye flow ka hissa nahi.
+#   - Clarification koi alag state nahi: `COLLECT_EMAIL` ke andar CLARIFY_CONTACT
+#     action + bounded retries se hoti hai.
+# ---------------------------------------------------------------------------
+
+initial_state: new_call
+
+# Terminal states — inse koi outgoing transition nahi ho sakti. Startup
+# validation isko enforce karti hai.
+terminal_states:
+  - end_call
+
+# Retry / clarification limits (config-driven, hardcode nahi). Full clarification
+# logic Sitting 2 mein; abhi sirf limits declare hain.
+limits:
+  email_clarification_max_attempts: 3
+  phone_clarification_max_attempts: 3
+  unclear_intent_max_attempts: 2
+
+# Response policy metadata per state (LLM layer baad mein consume karegi; abhi
+# sirf declared). Voice/TTS constraints yahan NAHI.
+response_policy:
+  default:
+    max_sentences: 2
+  reason_for_call:
+    max_sentences: 3
+  handle_question:
+    max_sentences: 2
+
+# ---------------------------------------------------------------------------
+# States. Har state define karti hai:
+#   - actions: is state mein allowed AgentActions (structural whitelist)
+#   - transitions: action -> target state (+ optional outcome, + requires)
+#   - requires: context preconditions jo Sitting 2 ka validator evaluate karega
+#   - is_detour: (optional) HANDLE_QUESTION jaisa temporary state jo previous
+#                state restore karta hai
+#
+# `outcome` field extensible hai: abhi ye ek string label hai. Future mein isko
+# call-outcome + lead-status mein alag kiya ja sakta hai bina machine rewrite ke.
+# ---------------------------------------------------------------------------
+states:
+
+  new_call:
+    actions: [greet]
+    transitions:
+      greet: { to: greeting }
+
+  greeting:
+    actions: [ask_identity, end_call]
+    transitions:
+      ask_identity: { to: identify_person }
+      end_call: { to: end_call, outcome: failed }
+
+  identify_person:
+    actions: [introduce_reason, ask_identity, end_call]
+    transitions:
+      # Machine ke bahar load hui memory decide karti hai introduce vs follow_up.
+      introduce_reason: { to: introduce }
+      # follow_up transition ke liye previous conversation context chahiye.
+      ask_identity: { to: identify_decision_maker }
+      end_call: { to: end_call, outcome: wrong_number }
+
+  # Follow-up entry — sirf tab valid jab previous conversation context ho.
+  follow_up:
+    actions: [introduce_reason]
+    requires: [previous_conversation_exists]
+    transitions:
+      introduce_reason: { to: reason_for_call }
+
+  introduce:
+    actions: [introduce_reason]
+    transitions:
+      introduce_reason: { to: reason_for_call }
+
+  reason_for_call:
+    actions: [introduce_reason]
+    transitions:
+      introduce_reason: { to: listen }
+
+  # Hub state — interest reading yahan hoti hai. Yahan se main branches nikalti hain.
+  listen:
+    actions:
+      [ask_email, schedule_callback, answer_question, ask_identity, mark_dnc, end_call]
+    transitions:
+      ask_email: { to: collect_email }
+      schedule_callback: { to: schedule_callback, preserve_interest: true }
+      answer_question: { to: handle_question }
+      ask_identity: { to: identify_decision_maker }
+      mark_dnc: { to: end_call, outcome: do_not_call }
+      end_call: { to: end_call, outcome: not_interested }
+
+  # Temporary detour — answer karke previous meaningful state par wapas.
+  handle_question:
+    actions: [answer_question, end_call, mark_dnc]
+    is_detour: true
+    transitions:
+      answer_question: { to: __previous__ }
+      mark_dnc: { to: end_call, outcome: do_not_call }
+      end_call: { to: end_call, outcome: not_interested }
+
+  collect_email:
+    actions: [ask_email, confirm_email, clarify_contact, schedule_callback, mark_dnc, end_call]
+    transitions:
+      # candidate mil gaya -> confirm (precondition validator Sitting 2 mein).
+      confirm_email: { to: confirm_contact, requires: [email_candidate_exists] }
+      # clarification: usi state mein reh kar clarify action, bounded retries.
+      clarify_contact: { to: collect_email, retry: email_clarification }
+      ask_email: { to: collect_email, retry: email_clarification }
+      schedule_callback: { to: schedule_callback, preserve_interest: true }
+      mark_dnc: { to: end_call, outcome: do_not_call }
+      end_call: { to: end_call, outcome: not_interested }
+
+  confirm_contact:
+    actions: [confirm_email, ask_email, mark_dnc, end_call]
+    requires: [email_candidate_exists]
+    transitions:
+      # confirmed -> qualified terminal.
+      confirm_email: { to: end_call, outcome: qualified, requires: [email_confirmed] }
+      # confirmation fail -> wapas collect.
+      ask_email: { to: collect_email }
+      mark_dnc: { to: end_call, outcome: do_not_call }
+      end_call: { to: end_call, outcome: not_interested }
+
+  schedule_callback:
+    actions: [schedule_callback, mark_dnc, end_call]
+    transitions:
+      schedule_callback:
+        { to: end_call, outcome: callback_scheduled, requires: [callback_context_exists] }
+      mark_dnc: { to: end_call, outcome: do_not_call }
+      end_call: { to: end_call, outcome: not_interested }
+
+  identify_decision_maker:
+    actions: [introduce_reason, mark_dnc, end_call]
+    transitions:
+      introduce_reason: { to: reason_for_call }
+      mark_dnc: { to: end_call, outcome: do_not_call }
+      end_call: { to: end_call, outcome: wrong_number }
+
+  end_call:
+    actions: []
+    transitions: {}
