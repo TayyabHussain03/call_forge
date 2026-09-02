@@ -29,6 +29,7 @@ limits:
   email_clarification_max_attempts: 3
   phone_clarification_max_attempts: 3
   unclear_intent_max_attempts: 2
+  service_offer_max_attempts: 3
 
 # Response policy metadata per state (LLM layer baad mein consume karegi; abhi
 # sirf declared). Voice/TTS constraints yahan NAHI.
@@ -123,12 +124,29 @@ states:
   # Hub state — interest reading yahan hoti hai. Yahan se main branches nikalti hain.
   listen:
     actions:
-      [ask_email, schedule_callback, answer_question, ask_identity, mark_dnc, end_call]
+      [ask_email, offer_service, schedule_callback, answer_question, ask_identity, mark_dnc, end_call]
     transitions:
       ask_email: { to: collect_email }
+      # Objection (e.g. "already has website") par alternative explore — end NAHI.
+      # requires: koi eligible non-repeated alternative maujood ho.
+      offer_service: { to: explore_alternative, requires: [has_applicable_alternative] }
       schedule_callback: { to: schedule_callback, preserve_interest: true }
       answer_question: { to: handle_question }
       ask_identity: { to: identify_decision_maker }
+      mark_dnc: { to: end_call, outcome: do_not_call }
+      end_call: { to: end_call, outcome: not_interested }
+
+  # Alternative-service explore mode. "Existing website ≠ dead lead" — yahan agent
+  # ek configured alternative offer karta hai. Interested → collect; not → close.
+  explore_alternative:
+    actions:
+      [ask_email, offer_service, schedule_callback, answer_question, mark_dnc, end_call]
+    transitions:
+      ask_email: { to: collect_email }
+      # Aur alternative — sirf jab koi eligible non-repeated bache (bounded).
+      offer_service: { to: explore_alternative, requires: [has_applicable_alternative], retry: service_offer }
+      schedule_callback: { to: schedule_callback, preserve_interest: true }
+      answer_question: { to: handle_question }
       mark_dnc: { to: end_call, outcome: do_not_call }
       end_call: { to: end_call, outcome: not_interested }
 

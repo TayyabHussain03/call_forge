@@ -16,7 +16,7 @@ DESIGN:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.conversation.guardrails.clarification import ClarificationState
@@ -50,6 +50,16 @@ class ConversationContext:
         business_phone: TRUSTED Business.phone_e164 (read-only source). Caller
             populate karta hai. Resolver BUSINESS_PHONE isse resolve karta hai.
         business_email: TRUSTED business email. Caller populate karta hai.
+        campaign_id: Active campaign (catalog scoping ke liye). Caller-populated.
+        known_signals: Client se detect hue eligibility signals (e.g.
+            "existing_website"). LLM/caller-populated trusted set.
+        eligible_alternative_service_ids: Catalog applicability se compute hui
+            eligible service-ids (offered minus already-offered). Engine
+            deterministically recompute karta hai — stale nahi. Future selector
+            isse relevant chunega bina catalog dobara scan kiye.
+        offered_service_ids: Ab tak jo services offer ho chuki (non-repeating
+            offering ke liye).
+        service_offers_made: Kitni baar OFFER_SERVICE hua (bounded offering).
         clarification: Active contact-clarification session state (frozen), ya None.
     """
 
@@ -68,7 +78,24 @@ class ConversationContext:
     call_number: str | None = None
     business_phone: str | None = None
     business_email: str | None = None
+    campaign_id: str | None = None
+    known_signals: frozenset[str] = field(default_factory=frozenset)
+    eligible_alternative_service_ids: tuple[str, ...] = ()
+    offered_service_ids: tuple[str, ...] = ()
+    service_offers_made: int = 0
     clarification: ClarificationState | None = None
+
+    @property
+    def has_applicable_alternative(self) -> bool:
+        """Whether any eligible non-repeated alternative service remains.
+
+        Derived from eligible_alternative_service_ids — koi stale boolean nahi.
+        Engine in ids ko recompute karta hai jab signals/campaign badle.
+
+        Returns:
+            bool: True agar koi eligible alternative bacha ho.
+        """
+        return bool(self.eligible_alternative_service_ids)
 
     def with_updates(self, **changes: Any) -> ConversationContext:
         """Return a new context with the given fields changed.
@@ -101,4 +128,5 @@ class ConversationContext:
             "callback": self.callback,
             "previous_conversation_exists": self.previous_conversation_exists,
             "dnc_pending": self.dnc_pending,
+            "has_applicable_alternative": self.has_applicable_alternative,
         }

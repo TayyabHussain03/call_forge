@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# Service Catalog — AUTHORITATIVE source of what the agent is authorized to
+# offer, per campaign. Ye conversation policy (conversation_config.yaml) se ALAG
+# hai — catalog authority deta hai, State Machine ko replace NAHI karta.
+#
+# Hierarchy: service → subservice → capability. Har service/subservice par
+# allowed/forbidden claims. `applicable_when` = generic eligibility signals
+# (relevance NAHI — woh future selector ka concern).
+#
+# Startup validation (fail-fast): unknown claim overlaps, duplicate ids,
+# campaign referencing undefined service → boot rukega.
+# ---------------------------------------------------------------------------
+
+services:
+  - id: website_development
+    name: Website Development
+    capabilities: [redesign, landing_pages, conversion_optimization]
+    applicable_when: [no_website, existing_website]
+    allowed_claims: [modern_design, mobile_responsive, faster_load, seo_friendly_build]
+    forbidden_claims: [guaranteed_rankings, guaranteed_revenue, guaranteed_customers]
+
+  - id: seo
+    name: SEO
+    capabilities: [keyword_research, on_page, link_building]
+    applicable_when: [existing_website, low_visibility]
+    subservices:
+      - id: local_seo
+        name: Local SEO
+        capabilities: [gmb_optimization, local_citations, review_management]
+        allowed_claims: [improve_local_visibility, optimize_gmb]
+        forbidden_claims: [guaranteed_first_page, guaranteed_calls]
+      - id: technical_seo
+        name: Technical SEO
+        capabilities: [site_speed, crawlability, structured_data]
+        allowed_claims: [improve_site_speed, fix_crawl_issues]
+        forbidden_claims: [guaranteed_rankings]
+    allowed_claims: [improve_visibility, on_page_optimization, keyword_targeting]
+    forbidden_claims: [guaranteed_first_page, guaranteed_traffic_numbers, guaranteed_revenue]
+
+  - id: ai_automation
+    name: AI Automation
+    capabilities: [lead_followup, support_automation, workflow_automation]
+    applicable_when: [manual_processes, existing_website, no_website]
+    allowed_claims: [automate_followup, reduce_manual_work]
+    forbidden_claims: [guaranteed_savings, guaranteed_conversion_lift]
+
+  - id: graphic_design
+    name: Graphic Design
+    capabilities: [logo_design, marketing_materials, social_graphics]
+    applicable_when: [weak_branding, existing_website, no_website]
+    allowed_claims: [professional_visuals, brand_consistency]
+    forbidden_claims: [guaranteed_engagement, guaranteed_sales]
+
+  - id: brand_building
+    name: Brand Building
+    capabilities: [brand_strategy, visual_identity, messaging]
+    applicable_when: [weak_branding]
+    allowed_claims: [strengthen_identity, consistent_messaging]
+    forbidden_claims: [guaranteed_recognition, guaranteed_growth]
+
+# Campaign scoping — har campaign ke paas authorized service-ids ki list.
+# Nayi campaign add/remove = sirf yahan change, koi engine rewrite nahi.
+campaigns:
+  campaign_a:
+    name: Web + SEO
+    services: [website_development, seo]
+  campaign_b:
+    name: Branding
+    services: [graphic_design, brand_building]
+  campaign_c:
+    name: SEO Only
+    services: [seo]
+  campaign_full:
+    name: Full Stack
+    services: [website_development, seo, ai_automation, graphic_design, brand_building]
