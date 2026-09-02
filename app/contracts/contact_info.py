@@ -48,6 +48,8 @@ class ContactChannel(str, Enum):
     EMAIL = "email"
     PHONE = "phone"
     WHATSAPP = "whatsapp"
+    SMS = "sms"
+    UNKNOWN = "unknown"  # channel ambiguous — resolver guess nahi karega
 
 
 # Deterministic email format pattern. "Sahi format" check karta hai, "asli
