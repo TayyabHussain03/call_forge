@@ -112,6 +112,26 @@ class ExtractedContact(BaseModel):
         return self.status == ContactStatus.CONFIRMED_BY_PERSON
 
     @property
+    def is_clear_for_progression(self) -> bool:
+        """Whether the extraction is clear enough to move toward confirmation.
+
+        Ye clarification ke liye canonical "clear/usable" signal hai — confirmation
+        se ALAG (woh baad mein client karta hai). "Clear" ka matlab: format valid
+        HO aur extractor ne value ko kam-se-kam VALIDATED/CONFIRMED status tak
+        process kiya ho (yani raw DETECTED se aage). Ye existing status + format
+        signals par bana hai — engine mein koi naya arbitrary confidence threshold
+        hardcode NAHI hota; "clear" ka faisla extractor ke set kiye status se aata
+        hai.
+
+        Returns:
+            bool: True agar contact clarification-progression ke liye clear hai.
+        """
+        return bool(self.format_valid) and self.status in (
+            ContactStatus.VALIDATED,
+            ContactStatus.CONFIRMED_BY_PERSON,
+        )
+
+    @property
     def is_safe_to_persist(self) -> bool:
         """Whether this contact may be stored as a confirmed contact.
 

@@ -93,6 +93,45 @@ class FallbackEngine:
             reason=reason,
         )
 
+    def select_for_state(
+        self, state: ConversationState, reason: str = "clarification_exhausted"
+    ) -> FallbackDecision:
+        """Select a state-specific safe recovery WITHOUT a validation failure.
+
+        Clarification exhaustion ek validation failure NAHI hai — koi action reject
+        nahi hua. Isliye ye method category-logic ko bypass karke seedha
+        state-specific (ya default) fallback deta hai, bina fake ValidationResult
+        banaye. Ye semantic boundary saaf rakhta hai.
+
+        Precedence: terminal state → terminal-safe; warna state-specific; warna
+        default safe-close.
+
+        Args:
+            state: The authoritative current state.
+            reason: Machine-readable reason (default clarification_exhausted).
+
+        Returns:
+            FallbackDecision: The chosen deterministic recovery.
+        """
+        if state in self._config.terminal_states:
+            return self.terminal_safe(reason="already_terminal")
+
+        if state in self._fb.by_state:
+            mapping = self._fb.by_state[state]
+            return FallbackDecision(
+                action=mapping.action,
+                response_key=mapping.response_key,
+                is_terminal=mapping.action == AgentAction.END_CALL,
+                reason=reason,
+            )
+
+        return FallbackDecision(
+            action=self._fb.default.action,
+            response_key=self._fb.default.response_key,
+            is_terminal=self._fb.default.action == AgentAction.END_CALL,
+            reason=reason,
+        )
+
     def select(
         self,
         state: ConversationState,

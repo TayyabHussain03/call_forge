@@ -13,11 +13,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app.contracts.contact_info import ContactChannel, ExtractedContact
 from app.contracts.conversation import ProposedConversationDecision
 from app.contracts.conversation_context import ConversationContext
 from app.contracts.validation import ValidationResult
 from app.conversation.guardrails.action_validator import ActionValidator
-from app.conversation.guardrails.fallbacks import FallbackEngine
+from app.conversation.guardrails.clarification import (
+    ClarificationEngine,
+    ClarificationOutcome,
+    ClarificationState,
+)
+from app.conversation.guardrails.fallbacks import FallbackDecision, FallbackEngine
 from app.conversation.guardrails.priority import resolve_priority_action
 from app.conversation.state_machine.machine import ConversationStateMachine
 from app.core.constants import AgentAction, ConversationState
@@ -131,18 +137,21 @@ class ConversationEngine:
         machine: ConversationStateMachine,
         validator: ActionValidator,
         fallback_engine: "FallbackEngine | None" = None,
+        clarification_engine: "ClarificationEngine | None" = None,
     ) -> None:
-        """Initialize with a per-session machine, validator, and fallback engine.
+        """Initialize with per-session machine, validator, fallback, clarification.
 
         Args:
             machine: This session's ConversationStateMachine.
             validator: The ActionValidator (config-bound, stateless).
-            fallback_engine: The FallbackEngine for deterministic recovery. None
-                => fallback path disabled (Step B behaviour: reject only).
+            fallback_engine: FallbackEngine for recovery. None => Step B behaviour.
+            clarification_engine: ClarificationEngine for contact turns. None =>
+                clarification disabled (Step B/C behaviour).
         """
         self._machine = machine
         self._validator = validator
         self._fallback = fallback_engine
+        self._clarification = clarification_engine
 
     @property
     def machine(self) -> ConversationStateMachine:
@@ -276,50 +285,54 @@ class ConversationEngine:
     def _fallback_path(
         self,
         context: ConversationContext,
-        original_validation: ValidationResult,
+        original_validation: ValidationResult | None,
         validator_ctx: dict[str, object],
+        decision: "FallbackDecision | None" = None,
+        clarification: "ClarificationDecision | None" = None,
     ) -> ConversationResult:
         """Attempt deterministic recovery via FallbackEngine (exactly once).
 
-        Flow (guide ke mutabiq):
-            1. FallbackEngine.select() ONCE — safe recovery action.
-            2. validator.validate(fallback_action) ONCE.
-            3. valid → machine.apply_transition → executed result.
-               invalid → recovery-failure result: state UNCHANGED, outcome None,
-               koi business outcome invent NAHI. No recursion, no re-select.
+        Do entry modes:
+            - Rejection recovery: `original_validation` diya, `decision` None →
+              FallbackEngine.select() se decision banega (category-aware).
+            - Exhaustion recovery: `decision` pehle se diya (select_for_state se),
+              `original_validation` None → koi fake validation failure nahi.
 
-        `original_validation` original rejection carry karta hai; `validation`
-        fallback ka validation hota hai (kyunki ab fallback hi current action
-        hai) — koi ValidationResult do jagah nahi.
+        Dono cases mein: fallback action ONCE validate hota hai; valid → machine,
+        invalid → recovery-failure (state unchanged, outcome None, no recursion).
 
         Args:
             context: Current session context (read-only).
-            original_validation: The original action's rejection result.
+            original_validation: Original rejection (rejection-recovery mein), ya
+                None (exhaustion-recovery mein).
             validator_ctx: Flat validator context (read-only dict).
+            decision: Pre-selected FallbackDecision (exhaustion), ya None (select
+                from validation).
+            clarification: ClarificationDecision to attach to the result, if any.
 
         Returns:
             ConversationResult: Executed fallback, ya recovery-failure result.
         """
-        assert self._fallback is not None  # caller guarantees this
+        assert self._fallback is not None
         state = self._machine.current_state
 
-        # 1. Select fallback ONCE.
-        decision = self._fallback.select(state, original_validation, validator_ctx)
+        # 1. Select fallback ONCE (unless caller pre-selected for exhaustion).
+        if decision is None:
+            assert original_validation is not None
+            decision = self._fallback.select(state, original_validation, validator_ctx)
         fallback_action = decision.action
 
         # 2. Validate fallback ONCE.
         fb_validation = self._validator.validate(state, fallback_action, validator_ctx)
 
         if fb_validation.allowed:
-            # 3a. Apply through machine — actual outcome ONLY from real transition.
             from_state = self._machine.current_state
             try:
                 transition = self._machine.apply_transition(fallback_action)
             except StateTransitionError:
-                # Machine rejected structurally despite validator — treat as
-                # recovery failure (no fabricated outcome).
                 return self._fallback_failed_result(
-                    context, original_validation, fb_validation, decision.response_key
+                    context, original_validation, fb_validation,
+                    decision.response_key, clarification,
                 )
             next_state = transition.to_state
             is_terminal = self._machine.is_terminal()
@@ -340,27 +353,28 @@ class ConversationEngine:
                 updated_context=new_context,
                 path="fallback",
                 approved_action=fallback_action,
-                outcome=transition.outcome,  # only from real ApprovedTransition
+                outcome=transition.outcome,
                 response_key=decision.response_key,
-                validation=fb_validation,           # current (fallback) validation
-                original_validation=original_validation,  # original rejection
+                validation=fb_validation,
+                original_validation=original_validation,
                 fallback_used=True,
                 fallback_failed=False,
+                clarification=clarification,
                 terminal_states=self._machine.config.terminal_states,
             )
 
-        # 3b. Fallback invalid → recovery-failure. NO state mutation, NO invented
-        #     outcome, NO recursion.
         return self._fallback_failed_result(
-            context, original_validation, fb_validation, decision.response_key
+            context, original_validation, fb_validation,
+            decision.response_key, clarification,
         )
 
     def _fallback_failed_result(
         self,
         context: ConversationContext,
-        original_validation: ValidationResult,
+        original_validation: ValidationResult | None,
         fb_validation: ValidationResult,
         response_key: str | None,
+        clarification: "ClarificationDecision | None" = None,
     ) -> ConversationResult:
         """Build a recovery-failure result: state unchanged, no invented outcome.
 
@@ -395,71 +409,228 @@ class ConversationEngine:
             original_validation=original_validation,
             fallback_used=True,
             fallback_failed=True,
+            clarification=clarification,
             terminal_states=self._machine.config.terminal_states,
         )
+
+    # Contact-collection/confirmation states jahan clarification relevant hai.
+    _CONTACT_STATES: frozenset[ConversationState] = frozenset(
+        {ConversationState.COLLECT_EMAIL, ConversationState.CONFIRM_CONTACT}
+    )
 
     def process_turn(
         self,
         context: ConversationContext,
         proposal: ProposedConversationDecision,
+        contact_extraction: ExtractedContact | None = None,
     ) -> ConversationResult:
-        """Process one conversation turn deterministically (Step B path).
+        """Process one conversation turn deterministically.
 
-        Pipeline: terminal guard → priority resolution → action selection →
-        validation → state transition → result. Fallback/clarification abhi nahi.
+        Precedence: terminal → priority (DNC/not-interested) → clarification
+        (contact turns) → normal action. Validation + machine transition har path
+        par apply hoti hai. Fallback (Step C) rejection/exhaustion par.
 
-        LLM ka `proposed_next_state` IGNORE hota hai — actual next state sirf
-        state machine se. Priority action (DNC/not-interested) conflicting
-        proposal ko override karta hai.
+        LLM ka `proposed_next_state` IGNORE hota hai. Priority clarification se
+        pehle — DNC/not-interested clarification ko run hone se rokte hain.
 
-        NOTE (duplicate-turn protection): future mein ek explicit turn/event id
-        yahan add hoga taake same logical turn dobara process na ho. Abhi ye
-        boundary documented hai, implement nahi — caller ek turn ek baar bheje.
+        NOTE (duplicate-turn protection): future turn/event id yahan aayega; abhi
+        caller ek turn ek baar bheje.
 
         Args:
-            context: Session context (read-only; engine ise mutate nahi karta).
-            proposal: The (untrusted) LLM proposal. detected_intent aur
-                proposed_action use hote hain; proposed_next_state ignore.
+            context: Session context (read-only; engine mutate nahi karta).
+            proposal: Untrusted LLM proposal (intent + action; next_state ignore).
+            contact_extraction: Optional structured contact extraction result.
+                Sirf contact-states mein clarification trigger karta hai.
 
         Returns:
-            ConversationResult: A structured, invariant-consistent result. Caller
+            ConversationResult: Structured, invariant-consistent result. Caller
             `updated_context` ko agle turn ke liye rakhe.
         """
-        # 1. Terminal guard — already terminal to kuch process nahi.
+        # 1. Terminal guard.
         if self._machine.is_terminal():
             return self._terminal_result(context)
 
         current_state = self._machine.current_state
         validator_ctx = context.to_validator_context()
 
-        # 2. Priority resolution — DNC/not-interested deterministic override.
+        # 2. Priority resolution — clarification se PEHLE (DNC/not-interested win).
         priority_action = resolve_priority_action(
             proposal.detected_intent.intent, current_state, validator_ctx
         )
-
         if priority_action is not None:
-            selected_action = priority_action
-            path = "priority"
-        else:
-            # 3. Normal flow — LLM proposed action (non-authoritative).
-            selected_action = proposal.proposed_action
-            path = "normal"
+            return self._validate_and_apply(
+                context, priority_action, validator_ctx, "priority"
+            )
 
-        # 4. Validation.
-        validation = self._validator.validate(
-            current_state, selected_action, validator_ctx
+        # 3. Clarification — sirf jab relevant (contact extraction + contact state
+        #    + matching channel). Warna skip.
+        if self._should_clarify(current_state, contact_extraction):
+            return self._clarification_path(
+                context, contact_extraction, validator_ctx  # type: ignore[arg-type]
+            )
+
+        # 4. Normal flow — LLM proposed action (non-authoritative).
+        return self._validate_and_apply(
+            context, proposal.proposed_action, validator_ctx, "normal"
         )
-        if not validation.allowed:
-            # Fallback path (Step C). Agar fallback engine nahi diya, Step B
-            # behaviour: structured rejection, koi recovery nahi.
-            if self._fallback is None:
-                return self._rejected_result(context, selected_action, validation, path)
-            return self._fallback_path(context, validation, validator_ctx)
 
-        # 5. State transition (machine is the state authority).
+    def _should_clarify(
+        self, state: ConversationState, extraction: ExtractedContact | None
+    ) -> bool:
+        """Whether clarification should run this turn.
+
+        Sirf tab True jab: clarification engine available ho, extraction diya ho,
+        current state contact-collection/confirmation ho. Unrelated turns par
+        (extraction None, ya non-contact state) False — taake attempts galat na
+        badhein.
+
+        Args:
+            state: Current conversational state.
+            extraction: The contact extraction result, if any.
+
+        Returns:
+            bool: True if clarification is relevant this turn.
+        """
+        return (
+            self._clarification is not None
+            and extraction is not None
+            and state in self._CONTACT_STATES
+        )
+
+    def _validate_and_apply(
+        self,
+        context: ConversationContext,
+        action: AgentAction,
+        validator_ctx: dict[str, object],
+        path: str,
+    ) -> ConversationResult:
+        """Validate an action and either apply it or enter the fallback path.
+
+        Args:
+            context: Current session context.
+            action: The selected action to validate.
+            validator_ctx: Flat validator context.
+            path: Path label ("priority"/"normal").
+
+        Returns:
+            ConversationResult: Applied result, rejection, or fallback recovery.
+        """
+        state = self._machine.current_state
+        validation = self._validator.validate(state, action, validator_ctx)
+        if not validation.allowed:
+            if self._fallback is None:
+                return self._rejected_result(context, action, validation, path)
+            return self._fallback_path(context, validation, validator_ctx)
         try:
-            return self._apply_and_build(context, selected_action, validation, path)
+            return self._apply_and_build(context, action, validation, path)
         except StateTransitionError:
             # Validator passed but machine rejected structurally — should not
             # happen; surface as rejection rather than silently ending the call.
-            return self._rejected_result(context, selected_action, validation, path)
+            return self._rejected_result(context, action, validation, path)
+
+    def _clarification_path(
+        self,
+        context: ConversationContext,
+        extraction: ExtractedContact,
+        validator_ctx: dict[str, object],
+    ) -> ConversationResult:
+        """Handle a contact turn via ClarificationEngine (CLEAR/RETRY/EXHAUSTED).
+
+        - CLEAR → confirmation action → validate → machine (count NAHI badhta).
+        - RETRY → CLARIFY_CONTACT + response_key → validate → machine.
+        - EXHAUSTED → existing fallback path (select_for_state, no fake
+          validation failure). One-attempt fallback validation.
+
+        Clarification state context se aati hai (ya nayi session banti hai) aur
+        updated state naye context mein rakhi jaati hai — original mutate nahi.
+        Engine khud counter mutate nahi karta; sab ClarificationEngine karta hai.
+
+        Args:
+            context: Current session context (read-only).
+            extraction: The contact extraction result (channel + clarity signal).
+            validator_ctx: Flat validator context.
+
+        Returns:
+            ConversationResult: CLEAR/RETRY applied result, ya EXHAUSTED fallback.
+        """
+        assert self._clarification is not None
+        state = self._machine.current_state
+        channel = extraction.channel
+
+        # Session clarification state: context se, ya nayi (channel ke liye).
+        clar_state = context.clarification
+        if clar_state is None or clar_state.channel != channel:
+            clar_state = self._clarification.new_session(channel)
+
+        # Clear/unclear ka faisla existing contract semantics se (koi naya
+        # threshold engine mein nahi).
+        is_clear = extraction.is_clear_for_progression
+        decision = self._clarification.evaluate(clar_state, extraction_clear=is_clear)
+
+        # Updated clarification state naye context mein (immutable copy). Clear
+        # extraction par candidate bhi context mein daalte hain taake downstream
+        # confirm validation (email_candidate_exists) pass ho — engine extract
+        # nahi karta, sirf extraction ka result consume karta hai.
+        context_updates: dict[str, object] = {"clarification": decision.new_state}
+        if (
+            is_clear
+            and channel == ContactChannel.EMAIL
+            and extraction.normalized_value
+        ):
+            context_updates["email_candidate"] = extraction.normalized_value
+        new_context = context.with_updates(**context_updates)
+        # validator ko naya candidate bhi dikhna chahiye is turn.
+        validator_ctx = {**validator_ctx, **{
+            k: v for k, v in context_updates.items() if k == "email_candidate"
+        }}
+
+        if decision.outcome == ClarificationOutcome.EXHAUSTED:
+            # Existing fallback path — exhaustion (no fake validation failure).
+            fb_decision = self._fallback.select_for_state(state) if self._fallback else None
+            if fb_decision is None:
+                # Fallback engine nahi — rejection-style safe result.
+                return self._rejected_result(
+                    new_context, AgentAction.CLARIFY_CONTACT,
+                    self._validator.validate(state, AgentAction.CLARIFY_CONTACT, validator_ctx),
+                    "clarification",
+                )
+            return self._fallback_path(
+                new_context, None, validator_ctx,
+                decision=fb_decision, clarification=decision,
+            )
+
+        # CLEAR / RETRY: decision.action ko validate + apply.
+        action = decision.action
+        assert action is not None  # CLEAR/RETRY always carry an action
+        validation = self._validator.validate(state, action, validator_ctx)
+        if not validation.allowed:
+            # Clarification action rejected → existing fallback behaviour.
+            if self._fallback is None:
+                return self._rejected_result(new_context, action, validation, "clarification")
+            return self._fallback_path(
+                new_context, validation, validator_ctx, clarification=decision
+            )
+
+        try:
+            transition = self._machine.apply_transition(action)
+        except StateTransitionError:
+            return self._rejected_result(new_context, action, validation, "clarification")
+
+        next_state = transition.to_state
+        is_terminal = self._machine.is_terminal()
+        return ConversationResult(
+            current_state=state,
+            next_state=next_state,
+            is_terminal=is_terminal,
+            continues=not is_terminal,
+            execution_required=True,
+            updated_context=new_context,
+            path="clarification",
+            approved_action=action,
+            outcome=transition.outcome,
+            response_key=decision.response_key,
+            validation=validation,
+            fallback_used=False,
+            clarification=decision,
+            terminal_states=self._machine.config.terminal_states,
+        )

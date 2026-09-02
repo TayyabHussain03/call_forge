@@ -48,7 +48,9 @@ class ContactProvenance(str, Enum):
     """
 
     LEAD_IMPORT = "lead_import"      # scraped/imported ke saath aaya
-    CLIENT_SPOKEN = "client_spoken"  # call mein client ne khud bataya
+    CLIENT_SPOKEN = "client_spoken"  # call mein client ne khud bataya (legacy alias)
+    CLIENT_PROVIDED = "client_provided"  # client ne explicit value diya
+    CLIENT_REFERENCED_CURRENT_CALL_NUMBER = "client_referenced_current_call_number"  # "is number par"
     MANUAL = "manual"               # human ne daala
     INFERRED = "inferred"           # system ne guess kiya
 
