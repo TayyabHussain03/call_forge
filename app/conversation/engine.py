@@ -14,9 +14,17 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.contracts.contact_info import ContactChannel, ExtractedContact
+from app.contracts.contact_understanding import (
+    ContactIntent,
+    ContactUnderstanding,
+    ResolutionContext,
+    ResolutionOutcome,
+)
 from app.contracts.conversation import ProposedConversationDecision
 from app.contracts.conversation_context import ConversationContext
+from app.contracts.pending_contact_method import PendingContactMethod
 from app.contracts.validation import ValidationResult
+from app.conversation.contact.resolver import ContactResolver
 from app.conversation.guardrails.action_validator import ActionValidator
 from app.conversation.guardrails.clarification import (
     ClarificationEngine,
@@ -68,9 +76,11 @@ class ConversationResult:
             recovery-failure. fallback_used=True + fallback_failed=False =
             fallback valid aur executed.
         clarification: ClarificationDecision agar clarification chali, ya None.
+        contact_to_persist: PendingContactMethod jab successful confirmation ne is
+            method ko persist-eligible banaya, warna None. Engine sirf INTENT deta
+            hai — actual DB service layer karta hai.
         updated_context: Naya context jo caller agle turn ke liye rakhe.
-        path: Debug label — kaunsa path liya ("terminal"/"priority"/"clarification"/
-            "normal"/"fallback").
+        path: Debug label.
     """
 
     current_state: ConversationState
@@ -88,6 +98,7 @@ class ConversationResult:
     fallback_used: bool = False
     fallback_failed: bool = False
     clarification: "ClarificationDecision | None" = None
+    contact_to_persist: "PendingContactMethod | None" = None
     terminal_states: frozenset[ConversationState] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
@@ -138,6 +149,7 @@ class ConversationEngine:
         validator: ActionValidator,
         fallback_engine: "FallbackEngine | None" = None,
         clarification_engine: "ClarificationEngine | None" = None,
+        contact_resolver: "ContactResolver | None" = None,
     ) -> None:
         """Initialize with per-session machine, validator, fallback, clarification.
 
@@ -147,11 +159,14 @@ class ConversationEngine:
             fallback_engine: FallbackEngine for recovery. None => Step B behaviour.
             clarification_engine: ClarificationEngine for contact turns. None =>
                 clarification disabled (Step B/C behaviour).
+            contact_resolver: ContactResolver for understanding→candidate. None =>
+                contact-understanding disabled.
         """
         self._machine = machine
         self._validator = validator
         self._fallback = fallback_engine
         self._clarification = clarification_engine
+        self._resolver = contact_resolver
 
     @property
     def machine(self) -> ConversationStateMachine:
@@ -422,25 +437,23 @@ class ConversationEngine:
         self,
         context: ConversationContext,
         proposal: ProposedConversationDecision,
-        contact_extraction: ExtractedContact | None = None,
+        contact_understanding: ContactUnderstanding | None = None,
     ) -> ConversationResult:
         """Process one conversation turn deterministically.
 
-        Precedence: terminal → priority (DNC/not-interested) → clarification
-        (contact turns) → normal action. Validation + machine transition har path
-        par apply hoti hai. Fallback (Step C) rejection/exhaustion par.
+        Precedence: terminal → priority (DNC/not-interested) → contact
+        understanding+resolution (contact turns) → normal action.
 
-        LLM ka `proposed_next_state` IGNORE hota hai. Priority clarification se
-        pehle — DNC/not-interested clarification ko run hone se rokte hain.
+        LLM ka `proposed_next_state` IGNORE hota hai. Priority contact-resolution
+        se pehle — DNC/not-interested resolver ko bypass karte hain.
 
-        NOTE (duplicate-turn protection): future turn/event id yahan aayega; abhi
-        caller ek turn ek baar bheje.
+        NOTE (duplicate-turn protection): future turn/event id yahan aayega.
 
         Args:
             context: Session context (read-only; engine mutate nahi karta).
             proposal: Untrusted LLM proposal (intent + action; next_state ignore).
-            contact_extraction: Optional structured contact extraction result.
-                Sirf contact-states mein clarification trigger karta hai.
+            contact_understanding: Optional structured contact interpretation.
+                Sirf contact-states mein resolver+clarification trigger karta hai.
 
         Returns:
             ConversationResult: Structured, invariant-consistent result. Caller
@@ -453,7 +466,7 @@ class ConversationEngine:
         current_state = self._machine.current_state
         validator_ctx = context.to_validator_context()
 
-        # 2. Priority resolution — clarification se PEHLE (DNC/not-interested win).
+        # 2. Priority resolution — resolution se PEHLE (DNC/not-interested win).
         priority_action = resolve_priority_action(
             proposal.detected_intent.intent, current_state, validator_ctx
         )
@@ -462,11 +475,10 @@ class ConversationEngine:
                 context, priority_action, validator_ctx, "priority"
             )
 
-        # 3. Clarification — sirf jab relevant (contact extraction + contact state
-        #    + matching channel). Warna skip.
-        if self._should_clarify(current_state, contact_extraction):
-            return self._clarification_path(
-                context, contact_extraction, validator_ctx  # type: ignore[arg-type]
+        # 3. Contact understanding + resolution — sirf jab relevant.
+        if self._should_handle_contact(current_state, contact_understanding):
+            return self._contact_path(
+                context, contact_understanding, validator_ctx  # type: ignore[arg-type]
             )
 
         # 4. Normal flow — LLM proposed action (non-authoritative).
@@ -474,26 +486,25 @@ class ConversationEngine:
             context, proposal.proposed_action, validator_ctx, "normal"
         )
 
-    def _should_clarify(
-        self, state: ConversationState, extraction: ExtractedContact | None
+    def _should_handle_contact(
+        self, state: ConversationState, understanding: ContactUnderstanding | None
     ) -> bool:
-        """Whether clarification should run this turn.
+        """Whether contact resolution/clarification should run this turn.
 
-        Sirf tab True jab: clarification engine available ho, extraction diya ho,
-        current state contact-collection/confirmation ho. Unrelated turns par
-        (extraction None, ya non-contact state) False — taake attempts galat na
-        badhein.
+        Sirf tab True jab resolver + clarification available hon, understanding
+        diya ho, aur current state contact-collection/confirmation ho.
 
         Args:
             state: Current conversational state.
-            extraction: The contact extraction result, if any.
+            understanding: The contact understanding, if any.
 
         Returns:
-            bool: True if clarification is relevant this turn.
+            bool: True if contact handling is relevant this turn.
         """
         return (
-            self._clarification is not None
-            and extraction is not None
+            self._resolver is not None
+            and self._clarification is not None
+            and understanding is not None
             and state in self._CONTACT_STATES
         )
 
@@ -528,85 +539,236 @@ class ConversationEngine:
             # happen; surface as rejection rather than silently ending the call.
             return self._rejected_result(context, action, validation, path)
 
-    def _clarification_path(
+    def _contact_path(
         self,
         context: ConversationContext,
-        extraction: ExtractedContact,
+        understanding: ContactUnderstanding,
         validator_ctx: dict[str, object],
     ) -> ConversationResult:
-        """Handle a contact turn via ClarificationEngine (CLEAR/RETRY/EXHAUSTED).
+        """Resolve a contact understanding, then route to clarification/fallback.
 
-        - CLEAR → confirmation action → validate → machine (count NAHI badhta).
-        - RETRY → CLARIFY_CONTACT + response_key → validate → machine.
-        - EXHAUSTED → existing fallback path (select_for_state, no fake
-          validation failure). One-attempt fallback validation.
+        Flow (E1 — NO persistence):
+            resolver.resolve(understanding, trusted ResolutionContext)
+            → RESOLVED           → candidate context mein → clarification CLEAR
+                                    → CONFIRM_CONTACT (candidate ready, NOT yet
+                                      a confirmed ContactMethod — E2 persists).
+            → NEEDS_CLARIFICATION → clarification RETRY (bounded)
+            → INVALID            → clarification RETRY (bounded)
+            → UNAVAILABLE_REFERENCE → clarification RETRY (bounded)
+            → UNSUPPORTED_REFERENCE → FallbackEngine (deterministic).
 
-        Clarification state context se aati hai (ya nayi session banti hai) aur
-        updated state naye context mein rakhi jaati hai — original mutate nahi.
-        Engine khud counter mutate nahi karta; sab ClarificationEngine karta hai.
+        Resolver ko trusted values context ke fields se milte hain (call_number,
+        business_phone, business_email) — jo application populate karti hai, LLM
+        nahi. Koi ContactMethodRepository yahan NAHI.
 
         Args:
             context: Current session context (read-only).
-            extraction: The contact extraction result (channel + clarity signal).
+            understanding: The (untrusted) contact interpretation.
             validator_ctx: Flat validator context.
 
         Returns:
-            ConversationResult: CLEAR/RETRY applied result, ya EXHAUSTED fallback.
+            ConversationResult: Routed result.
+        """
+        assert self._resolver is not None
+        assert self._clarification is not None
+        state = self._machine.current_state
+
+        # CONFIRM_CONTACT state + confirm/correct intent = client confirmation.
+        # Ye woh point hai jahan candidate persist-eligible ban sakta hai.
+        if state == ConversationState.CONFIRM_CONTACT and understanding.intent in (
+            ContactIntent.CONFIRM_CONTACT,
+        ):
+            return self._handle_confirmation(context, validator_ctx)
+
+        # CORRECT_CONTACT ko normal PROVIDE_CONTACT ki tarah resolve karo — naya
+        # candidate banega (purana method persistence layer mein untouched rehta).
+        # Resolution level par correction aur provide same hain.
+
+        # Trusted resolution context — sirf application-populated fields se.
+        res_ctx = ResolutionContext(
+            call_number=context.call_number,
+            business_phone=context.business_phone,
+            business_email=context.business_email,
+            region=None,
+        )
+        result = self._resolver.resolve(understanding, res_ctx)
+
+        # UNSUPPORTED_REFERENCE → deterministic fallback (retry se theek nahi hoga).
+        if result.outcome == ResolutionOutcome.UNSUPPORTED_REFERENCE:
+            if self._fallback is None:
+                return self._rejected_result(
+                    context, AgentAction.CLARIFY_CONTACT,
+                    self._validator.validate(state, AgentAction.CLARIFY_CONTACT, validator_ctx),
+                    "contact",
+                )
+            fb_decision = self._fallback.select_for_state(state)
+            return self._fallback_path(
+                context, None, validator_ctx, decision=fb_decision
+            )
+
+        # RESOLVED → candidate ready (clear). NEEDS/INVALID/UNAVAILABLE → unclear.
+        is_clear = result.outcome == ResolutionOutcome.RESOLVED
+
+        # Candidate ko context mein daalo (RESOLVED par) — DB mein NAHI (E1).
+        # value + channel + provenance SYNCHRONIZED.
+        new_context = context
+        if is_clear and result.value_normalized:
+            new_context = context.with_updates(
+                contact_candidate=result.value_normalized,
+                contact_candidate_channel=(
+                    result.channel.value if result.channel else None
+                ),
+                contact_candidate_provenance=(
+                    result.provenance.value if result.provenance else None
+                ),
+            )
+            validator_ctx = {
+                **validator_ctx,
+                "contact_candidate": result.value_normalized,
+            }
+
+        return self._run_clarification(
+            new_context, understanding.channel, is_clear, validator_ctx, result
+        )
+
+    def _handle_confirmation(
+        self, context: ConversationContext, validator_ctx: dict[str, object]
+    ) -> ConversationResult:
+        """Handle explicit client confirmation of a pending candidate.
+
+        Client ne `CONFIRM_CONTACT` state mein confirm kiya. Agar candidate +
+        channel + provenance + current_contact_id sab maujood hon, to:
+            - contact_confirmed=True set → validator pass → end_call(qualified)
+            - persist-INTENT (PendingContactMethod) result mein — DB engine nahi.
+        Agar koi zaroori data missing ho → confirmation valid nahi, candidate
+        discard (no persist), safe route.
+
+        Args:
+            context: Current session context.
+            validator_ctx: Flat validator context.
+
+        Returns:
+            ConversationResult: Confirmed+persist-intent result, ya safe rejection.
+        """
+        state = self._machine.current_state
+
+        # Required data for a real confirmation → persist intent.
+        has_all = (
+            context.contact_candidate
+            and context.contact_candidate.strip()
+            and context.contact_candidate_channel
+            and context.contact_candidate_provenance
+            and context.current_contact_id
+        )
+        if not has_all:
+            # Confirmation without complete candidate data → cannot persist.
+            # Do NOT fabricate; route back as rejection (no state mutation).
+            validation = self._validator.validate(
+                state, AgentAction.CONFIRM_CONTACT, validator_ctx
+            )
+            return self._rejected_result(
+                context, AgentAction.CONFIRM_CONTACT, validation, "contact"
+            )
+
+        # Set contact_confirmed so the qualified transition's precondition passes.
+        confirmed_ctx = context.with_updates(contact_confirmed=True)
+        confirm_validator_ctx = {**validator_ctx, "contact_confirmed": True}
+
+        validation = self._validator.validate(
+            state, AgentAction.CONFIRM_CONTACT, confirm_validator_ctx
+        )
+        if not validation.allowed:
+            return self._rejected_result(
+                context, AgentAction.CONFIRM_CONTACT, validation, "contact"
+            )
+
+        try:
+            transition = self._machine.apply_transition(AgentAction.CONFIRM_CONTACT)
+        except StateTransitionError:
+            return self._rejected_result(
+                context, AgentAction.CONFIRM_CONTACT, validation, "contact"
+            )
+
+        # Persist INTENT (not DB). value+channel+provenance+contact_id from context.
+        pending = PendingContactMethod(
+            contact_id=context.current_contact_id,  # type: ignore[arg-type]
+            channel=context.contact_candidate_channel,  # type: ignore[arg-type]
+            value_normalized=context.contact_candidate,  # type: ignore[arg-type]
+            provenance=context.contact_candidate_provenance,  # type: ignore[arg-type]
+        )
+
+        next_state = transition.to_state
+        is_terminal = self._machine.is_terminal()
+        return ConversationResult(
+            current_state=state,
+            next_state=next_state,
+            is_terminal=is_terminal,
+            continues=not is_terminal,
+            execution_required=True,
+            updated_context=confirmed_ctx,
+            path="contact",
+            approved_action=AgentAction.CONFIRM_CONTACT,
+            outcome=transition.outcome,
+            validation=validation,
+            fallback_used=False,
+            contact_to_persist=pending,
+            terminal_states=self._machine.config.terminal_states,
+        )
+
+    def _run_clarification(
+        self,
+        context: ConversationContext,
+        channel: ContactChannel,
+        is_clear: bool,
+        validator_ctx: dict[str, object],
+        resolution: object,
+    ) -> ConversationResult:
+        """Drive the ClarificationEngine with a clear/unclear signal.
+
+        CLEAR → CONFIRM_CONTACT action; RETRY → CLARIFY_CONTACT; EXHAUSTED →
+        existing fallback path. Candidate persistence NAHI hoti (E1).
+
+        Args:
+            context: Current session context.
+            channel: The contact channel.
+            is_clear: Whether the resolution produced a usable candidate.
+            validator_ctx: Flat validator context (candidate included if clear).
+            resolution: The ResolutionResult (attached to result for traceability).
+
+        Returns:
+            ConversationResult: CLEAR/RETRY applied, ya EXHAUSTED fallback.
         """
         assert self._clarification is not None
         state = self._machine.current_state
-        channel = extraction.channel
 
-        # Session clarification state: context se, ya nayi (channel ke liye).
         clar_state = context.clarification
         if clar_state is None or clar_state.channel != channel:
             clar_state = self._clarification.new_session(channel)
 
-        # Clear/unclear ka faisla existing contract semantics se (koi naya
-        # threshold engine mein nahi).
-        is_clear = extraction.is_clear_for_progression
         decision = self._clarification.evaluate(clar_state, extraction_clear=is_clear)
-
-        # Updated clarification state naye context mein (immutable copy). Clear
-        # extraction par candidate bhi context mein daalte hain taake downstream
-        # confirm validation (email_candidate_exists) pass ho — engine extract
-        # nahi karta, sirf extraction ka result consume karta hai.
-        context_updates: dict[str, object] = {"clarification": decision.new_state}
-        if (
-            is_clear
-            and channel == ContactChannel.EMAIL
-            and extraction.normalized_value
-        ):
-            context_updates["email_candidate"] = extraction.normalized_value
-        new_context = context.with_updates(**context_updates)
-        # validator ko naya candidate bhi dikhna chahiye is turn.
-        validator_ctx = {**validator_ctx, **{
-            k: v for k, v in context_updates.items() if k == "email_candidate"
-        }}
+        new_context = context.with_updates(clarification=decision.new_state)
 
         if decision.outcome == ClarificationOutcome.EXHAUSTED:
-            # Existing fallback path — exhaustion (no fake validation failure).
-            fb_decision = self._fallback.select_for_state(state) if self._fallback else None
+            fb_decision = (
+                self._fallback.select_for_state(state) if self._fallback else None
+            )
             if fb_decision is None:
-                # Fallback engine nahi — rejection-style safe result.
                 return self._rejected_result(
                     new_context, AgentAction.CLARIFY_CONTACT,
                     self._validator.validate(state, AgentAction.CLARIFY_CONTACT, validator_ctx),
-                    "clarification",
+                    "contact",
                 )
             return self._fallback_path(
                 new_context, None, validator_ctx,
                 decision=fb_decision, clarification=decision,
             )
 
-        # CLEAR / RETRY: decision.action ko validate + apply.
         action = decision.action
-        assert action is not None  # CLEAR/RETRY always carry an action
+        assert action is not None
         validation = self._validator.validate(state, action, validator_ctx)
         if not validation.allowed:
-            # Clarification action rejected → existing fallback behaviour.
             if self._fallback is None:
-                return self._rejected_result(new_context, action, validation, "clarification")
+                return self._rejected_result(new_context, action, validation, "contact")
             return self._fallback_path(
                 new_context, validation, validator_ctx, clarification=decision
             )
@@ -614,7 +776,7 @@ class ConversationEngine:
         try:
             transition = self._machine.apply_transition(action)
         except StateTransitionError:
-            return self._rejected_result(new_context, action, validation, "clarification")
+            return self._rejected_result(new_context, action, validation, "contact")
 
         next_state = transition.to_state
         is_terminal = self._machine.is_terminal()
@@ -625,7 +787,7 @@ class ConversationEngine:
             continues=not is_terminal,
             execution_required=True,
             updated_context=new_context,
-            path="clarification",
+            path="contact",
             approved_action=action,
             outcome=transition.outcome,
             response_key=decision.response_key,

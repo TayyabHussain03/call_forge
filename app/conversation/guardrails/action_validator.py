@@ -68,8 +68,8 @@ def _is_true(context: Mapping[str, Any], key: str) -> bool:
 # hona chahiye. Agar config mein koi key aaye jo yahan nahi → UNKNOWN_REQUIREMENT
 # (config/design error, silently pass/fail nahi).
 _PREREQUISITES: dict[str, PrerequisitePredicate] = {
-    "email_candidate_exists": lambda ctx: _has_nonempty(ctx, "email_candidate"),
-    "email_confirmed": lambda ctx: _is_true(ctx, "email_confirmed"),
+    "contact_candidate_exists": lambda ctx: _has_nonempty(ctx, "contact_candidate"),
+    "contact_confirmed": lambda ctx: _is_true(ctx, "contact_confirmed"),
     "callback_context_exists": lambda ctx: _has_nonempty(ctx, "callback"),
     "previous_conversation_exists": lambda ctx: _is_true(
         ctx, "previous_conversation_exists"

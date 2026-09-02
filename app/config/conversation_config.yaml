@@ -59,7 +59,7 @@ fallbacks:
   # Per-state recovery jab reject hua ho (missing prereq / not eligible).
   by_state:
     collect_email: { action: ask_email, response_key: repeat_email }
-    confirm_contact: { action: confirm_email, response_key: confirm_again }
+    confirm_contact: { action: confirm_contact, response_key: confirm_again }
     schedule_callback: { action: schedule_callback, response_key: clarify_callback_time }
 
   # Category-driven fallbacks jo state-specific mapping par override karte hain.
@@ -142,10 +142,10 @@ states:
       end_call: { to: end_call, outcome: not_interested }
 
   collect_email:
-    actions: [ask_email, confirm_email, clarify_contact, schedule_callback, mark_dnc, end_call]
+    actions: [ask_email, confirm_contact, clarify_contact, schedule_callback, mark_dnc, end_call]
     transitions:
       # candidate mil gaya -> confirm (precondition validator Sitting 2 mein).
-      confirm_email: { to: confirm_contact, requires: [email_candidate_exists] }
+      confirm_contact: { to: confirm_contact, requires: [contact_candidate_exists] }
       # clarification: usi state mein reh kar clarify action, bounded retries.
       clarify_contact: { to: collect_email, retry: email_clarification }
       ask_email: { to: collect_email, retry: email_clarification }
@@ -154,11 +154,11 @@ states:
       end_call: { to: end_call, outcome: not_interested }
 
   confirm_contact:
-    actions: [confirm_email, ask_email, mark_dnc, end_call]
-    requires: [email_candidate_exists]
+    actions: [confirm_contact, ask_email, mark_dnc, end_call]
+    requires: [contact_candidate_exists]
     transitions:
       # confirmed -> qualified terminal.
-      confirm_email: { to: end_call, outcome: qualified, requires: [email_confirmed] }
+      confirm_contact: { to: end_call, outcome: qualified, requires: [contact_confirmed] }
       # confirmation fail -> wapas collect.
       ask_email: { to: collect_email }
       mark_dnc: { to: end_call, outcome: do_not_call }

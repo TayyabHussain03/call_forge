@@ -133,7 +133,7 @@ class AgentAction(StrEnum):
     INTRODUCE_REASON = "introduce_reason"
     ANSWER_QUESTION = "answer_question"
     ASK_EMAIL = "ask_email"
-    CONFIRM_EMAIL = "confirm_email"
+    CONFIRM_CONTACT = "confirm_contact"
     CLARIFY_CONTACT = "clarify_contact"
     SCHEDULE_CALLBACK = "schedule_callback"
     MARK_DNC = "mark_dnc"

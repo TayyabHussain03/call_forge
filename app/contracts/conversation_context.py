@@ -33,12 +33,23 @@ class ConversationContext:
         previous_contact_id: Pichli baar jis person se baat hui thi (follow-up).
         previous_conversation_exists: Kya is person se pehle baat hui — follow_up
             state ka precondition.
-        email_candidate: Abhi tak mila email candidate (unconfirmed). Validator
-            `email_candidate_exists` isse dekhta hai.
-        email_confirmed: Kya email client ne confirm kiya.
+        contact_candidate: Abhi tak mila contact candidate (unconfirmed, channel-
+            agnostic). Validator `contact_candidate_exists` isse dekhta hai.
+            RESOLVED resolution ka value yahan aata hai — DB mein NAHI (E1).
+        contact_candidate_channel: Us candidate ka channel (email/phone/...).
+        contact_candidate_provenance: Us candidate ka provenance (resolver se).
+            Value + channel + provenance synchronized rehte hain — kabhi mismatched
+            nahi.
+        contact_confirmed: Kya candidate client ne confirm kiya.
         callback: Callback context/time string agar mila.
         dnc_pending: Kya client ne DNC maanga (validator safety-net isse dekhta).
         interest_preserved: True jab busy→callback ne interest barqarar rakha.
+        call_number: TRUSTED telephony session number (E.164). Caller/application
+            populate karta hai — LLM/transcript ise mutate NAHI kar sakta.
+            Resolver CURRENT_CALL_NUMBER isse resolve karta hai.
+        business_phone: TRUSTED Business.phone_e164 (read-only source). Caller
+            populate karta hai. Resolver BUSINESS_PHONE isse resolve karta hai.
+        business_email: TRUSTED business email. Caller populate karta hai.
         clarification: Active contact-clarification session state (frozen), ya None.
     """
 
@@ -47,11 +58,16 @@ class ConversationContext:
     current_contact_id: str | None = None
     previous_contact_id: str | None = None
     previous_conversation_exists: bool = False
-    email_candidate: str | None = None
-    email_confirmed: bool = False
+    contact_candidate: str | None = None
+    contact_candidate_channel: str | None = None
+    contact_candidate_provenance: str | None = None
+    contact_confirmed: bool = False
     callback: str | None = None
     dnc_pending: bool = False
     interest_preserved: bool = False
+    call_number: str | None = None
+    business_phone: str | None = None
+    business_email: str | None = None
     clarification: ClarificationState | None = None
 
     def with_updates(self, **changes: Any) -> ConversationContext:
@@ -71,16 +87,17 @@ class ConversationContext:
     def to_validator_context(self) -> dict[str, Any]:
         """Produce the flat dict the ActionValidator/machine expect.
 
-        Validator prerequisite keys (email_candidate, email_confirmed, callback,
-        previous_conversation_exists) aur DNC safety-net key (dnc_pending) is dict
-        se aate hain. Ye ek naya dict banata hai — context mutate nahi hota.
+        Validator prerequisite keys (contact_candidate, contact_confirmed,
+        callback, previous_conversation_exists) aur DNC safety-net key
+        (dnc_pending) is dict se aate hain. Ye ek naya dict banata hai — context
+        mutate nahi hota.
 
         Returns:
             dict[str, Any]: Flat read-only context for validation.
         """
         return {
-            "email_candidate": self.email_candidate,
-            "email_confirmed": self.email_confirmed,
+            "contact_candidate": self.contact_candidate,
+            "contact_confirmed": self.contact_confirmed,
             "callback": self.callback,
             "previous_conversation_exists": self.previous_conversation_exists,
             "dnc_pending": self.dnc_pending,
