@@ -38,7 +38,9 @@ from app.core.constants import AgentAction, ConversationState
 from app.core.exceptions import StateTransitionError, ValidationError
 
 if TYPE_CHECKING:
+    from app.catalog.selection.contracts import SelectionResult
     from app.conversation.guardrails.clarification import ClarificationDecision
+    from app.services.service_offering_service import ServiceOfferingService
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,7 @@ class ConversationResult:
     fallback_failed: bool = False
     clarification: "ClarificationDecision | None" = None
     contact_to_persist: "PendingContactMethod | None" = None
+    service_selection: "SelectionResult | None" = None
     terminal_states: frozenset[ConversationState] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
@@ -150,23 +153,27 @@ class ConversationEngine:
         fallback_engine: "FallbackEngine | None" = None,
         clarification_engine: "ClarificationEngine | None" = None,
         contact_resolver: "ContactResolver | None" = None,
+        offering_service: "ServiceOfferingService | None" = None,
     ) -> None:
-        """Initialize with per-session machine, validator, fallback, clarification.
+        """Initialize with per-session machine, validator, and optional engines.
 
         Args:
             machine: This session's ConversationStateMachine.
             validator: The ActionValidator (config-bound, stateless).
             fallback_engine: FallbackEngine for recovery. None => Step B behaviour.
             clarification_engine: ClarificationEngine for contact turns. None =>
-                clarification disabled (Step B/C behaviour).
+                clarification disabled.
             contact_resolver: ContactResolver for understanding→candidate. None =>
                 contact-understanding disabled.
+            offering_service: ServiceOfferingService for OFFER_SERVICE. None =>
+                offering disabled (offer_service falls to normal validation).
         """
         self._machine = machine
         self._validator = validator
         self._fallback = fallback_engine
         self._clarification = clarification_engine
         self._resolver = contact_resolver
+        self._offering = offering_service
 
     @property
     def machine(self) -> ConversationStateMachine:
@@ -481,9 +488,114 @@ class ConversationEngine:
                 context, contact_understanding, validator_ctx  # type: ignore[arg-type]
             )
 
+        # 3b. Service offering — LLM ne OFFER_SERVICE propose kiya + offering wired.
+        #     Priority (DNC/not-interested) pehle already handle ho chuki.
+        if (
+            proposal.proposed_action == AgentAction.OFFER_SERVICE
+            and self._offering is not None
+        ):
+            return self._offer_path(context, validator_ctx)
+
         # 4. Normal flow — LLM proposed action (non-authoritative).
         return self._validate_and_apply(
             context, proposal.proposed_action, validator_ctx, "normal"
+        )
+
+    def _offer_path(
+        self, context: ConversationContext, validator_ctx: dict[str, object]
+    ) -> ConversationResult:
+        """Wire OFFER_SERVICE: fresh eligibility → select → authorize → offer.
+
+        Sequence (locked, transactional):
+            1. ServiceOfferingService.offer(...) → fresh eligibility + selection.
+            2. Agar approved → context mein fresh eligible ids set (so validator's
+               has_applicable_alternative True ho) → validate OFFER_SERVICE.
+            3. Transition SUCCEED hone ke BAAD hi offered_service_ids += approved
+               (approval se pehle mutate NAHI — transactional).
+            4. No offer / rejection / selector-failure → deterministic fallback,
+               kabhi random service nahi.
+
+        Non-repetition authority = offered_service_ids (offering service usse
+        eligible compute karta hai). offers_made sirf ceiling/observability.
+
+        Args:
+            context: Current session context (read-only).
+            validator_ctx: Flat validator context.
+
+        Returns:
+            ConversationResult: Offer applied (EXPLORE_ALTERNATIVE), ya fallback.
+        """
+        assert self._offering is not None
+        state = self._machine.current_state
+
+        offer_result = self._offering.offer(
+            campaign_id=context.campaign_id or "",
+            known_signals=context.known_signals,
+            offered_service_ids=context.offered_service_ids,
+            offers_made=context.service_offers_made,
+        )
+
+        # No approved offer → deterministic recovery (no random service).
+        if not offer_result.can_offer:
+            if self._fallback is None:
+                return self._rejected_result(
+                    context, AgentAction.OFFER_SERVICE,
+                    self._validator.validate(state, AgentAction.OFFER_SERVICE, validator_ctx),
+                    "offer",
+                )
+            fb_decision = self._fallback.select_for_state(state)
+            return self._fallback_path(
+                context, None, validator_ctx, decision=fb_decision
+            )
+
+        approved_id = offer_result.approved_service_id
+        # Fresh eligible ids context mein — taake validator ka
+        # has_applicable_alternative True ho is turn. offered_service_ids abhi
+        # NAHI badalte (approval se pehle mutate nahi — transactional).
+        pre_ctx = context.with_updates(
+            eligible_alternative_service_ids=offer_result.eligible_service_ids
+        )
+        offer_validator_ctx = {**validator_ctx, "has_applicable_alternative": True}
+
+        validation = self._validator.validate(
+            state, AgentAction.OFFER_SERVICE, offer_validator_ctx
+        )
+        if not validation.allowed:
+            # Validation fail → offered_service_ids mutate NAHI (transactional).
+            return self._rejected_result(
+                context, AgentAction.OFFER_SERVICE, validation, "offer"
+            )
+
+        try:
+            transition = self._machine.apply_transition(AgentAction.OFFER_SERVICE)
+        except StateTransitionError:
+            # Transition fail → offered_service_ids mutate NAHI.
+            return self._rejected_result(
+                context, AgentAction.OFFER_SERVICE, validation, "offer"
+            )
+
+        # SUCCESS → ab commit context update: offered += approved, offers_made += 1.
+        committed_ctx = pre_ctx.with_updates(
+            offered_service_ids=(*context.offered_service_ids, approved_id),
+            service_offers_made=context.service_offers_made + 1,
+        )
+
+        next_state = transition.to_state
+        is_terminal = self._machine.is_terminal()
+        return ConversationResult(
+            current_state=state,
+            next_state=next_state,
+            is_terminal=is_terminal,
+            continues=not is_terminal,
+            execution_required=True,
+            updated_context=committed_ctx,
+            path="offer",
+            approved_action=AgentAction.OFFER_SERVICE,
+            outcome=transition.outcome,
+            validation=validation,
+            fallback_used=False,
+            service_selection=offer_result.selection,
+            terminal_states=self._machine.config.terminal_states,
         )
 
     def _should_handle_contact(
