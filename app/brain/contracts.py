@@ -22,7 +22,7 @@ from app.brain.business_intelligence import (
     UnknownSlot,
 )
 from app.contracts.contact_understanding import ContactUnderstanding
-from app.core.constants import AgentAction, ConversationState, Intent, Tone
+from app.core.constants import AgentAction, ConversationState, Intent, TopicCategory, Tone
 
 
 @dataclass(frozen=True)
@@ -114,6 +114,9 @@ class BrainProposal:
         detected_intent: Interpreted client intent (proposal — priority authority
             rakhti hai actual DNC decision).
         tone: Interpreted tone.
+        topic_category: Structured conversational topic (UNTRUSTED — Brain proposes).
+            ScopePolicyValidator isse deterministically scope check karta hai, raw
+            text/keyword ke bina. Default UNKNOWN → fail-closed.
         proposed_action: Suggested next action (non-authoritative — ActionValidator
             + state machine decide karte hain).
         needs_service_decision: FLAG — "service decision chahiye". Chosen service
@@ -133,6 +136,7 @@ class BrainProposal:
 
     detected_intent: Intent
     tone: Tone = Tone.NEUTRAL
+    topic_category: TopicCategory = TopicCategory.UNKNOWN
     proposed_action: AgentAction | None = None
     needs_service_decision: bool = False
     involves_contact: bool = False

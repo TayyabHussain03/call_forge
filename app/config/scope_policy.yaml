@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Scope Policy — conversational scope authority. Service catalog se ALAG:
+# ye batati hai "kis KIND of topic/action allowed hai", catalog batata hai
+# "kaunse specific services/claims". Koi service_id/claim/pricing yahan NAHI.
+#
+# Ye ek pre-resolved single policy hai. Global→campaign→call MERGING future
+# orchestrator karega; validator ek resolved trusted policy consume karta hai.
+#
+# Startup validation fail-fast: unknown category, allow/deny overlap → boot rukega.
+# Fail-closed: jo allowed-list mein nahi, woh out-of-scope.
+# ---------------------------------------------------------------------------
+
+policies:
+  # Campaign A — web/automation/marketing business discussion.
+  business_general:
+    policy_id: business_general
+    allowed_topics:
+      - business_question
+      - service_discussion
+      - objection
+      - callback
+      - contact_collection
+      - commercial_request      # pricing/quote SCOPE-in; authority alag layer
+      - qualification
+    allowed_actions:
+      - greet
+      - ask_identity
+      - introduce_reason
+      - answer_question
+      - offer_service
+      - ask_email
+      - confirm_contact
+      - clarify_contact
+      - schedule_callback
+      - mark_dnc
+      - end_call
+    restricted_topics:
+      - off_topic
+    # escalation_topics: topics jo scope-in hain lekin authority/human route hote
+    # hain (FLAG only — authority decision AuthorityPolicy leti hai, scope nahi).
+    escalation_topics:
+      - commercial_request
+
+  # Campaign C — SEO-only narrowed (call-specific narrowing ka example; abhi
+  # ek resolved policy, merging future).
+  seo_only:
+    policy_id: seo_only
+    allowed_topics:
+      - business_question
+      - service_discussion
+      - objection
+      - callback
+      - contact_collection
+      - qualification
+    allowed_actions:
+      - greet
+      - answer_question
+      - offer_service
+      - ask_email
+      - confirm_contact
+      - schedule_callback
+      - mark_dnc
+      - end_call
+    restricted_topics:
+      - off_topic
+      - commercial_request      # is narrowed policy mein commercial bhi bahar
+    escalation_topics: []
