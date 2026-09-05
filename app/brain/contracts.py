@@ -22,7 +22,34 @@ from app.brain.business_intelligence import (
     UnknownSlot,
 )
 from app.contracts.contact_understanding import ContactUnderstanding
-from app.core.constants import AgentAction, ConversationState, Intent, TopicCategory, Tone
+from app.core.constants import (
+    AgentAction,
+    CommercialRequestKind,
+    ConversationState,
+    Intent,
+    TopicCategory,
+    Tone,
+)
+
+
+@dataclass(frozen=True)
+class CommercialRequest:
+    """Smallest structured commercial detail the Brain flags (UNTRUSTED).
+
+    `topic_category=COMMERCIAL_REQUEST` sirf "commercial baat hai" batata hai; ye
+    batata hai KAUNSI aur (discount ke liye) kitni. AuthorityPolicy isse
+    deterministic tier derive karti hai. Ye UNTRUSTED proposal data hai — LLM
+    authority decide NAHI karta. Koi raw pricing text, koi giant object.
+
+    Attributes:
+        kind: Which commercial ask (discount/quotation/custom_pricing/...).
+        requested_discount_percent: Discount % agar kind DISCOUNT ho, warna None.
+            Untrusted — AuthorityPolicy config bounds ke against deterministically
+            check karti hai; LLM discount calculate/authorize NAHI karta.
+    """
+
+    kind: CommercialRequestKind
+    requested_discount_percent: float | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +167,7 @@ class BrainProposal:
     proposed_action: AgentAction | None = None
     needs_service_decision: bool = False
     involves_contact: bool = False
+    commercial_request: CommercialRequest | None = None
     contact_understanding: ContactUnderstanding | None = None
     intelligence_updates: tuple[ObservedSignal | InferredSignal | UnknownSlot, ...] = ()
     proposed_goal_update: str | None = None

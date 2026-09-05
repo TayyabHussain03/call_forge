@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Budget / Early-Exit Policy — RESOURCE control, NOT conversation intelligence.
+# Four INDEPENDENT budgets: reasoning_calls / turns / call_duration (per-call
+# ceilings) aur response_length (per-turn constraint).
+#
+# NOTE (locked OPEN): ye numbers PLACEHOLDER hain — final values real
+# simulation/call data se tune honge. Yahan sirf structure lock hai, values nahi.
+#
+# Pre-resolved single policy (global→campaign→call merging future orchestrator).
+# Fail-fast: unknown behavior enum → boot rukega.
+# Fail-closed: missing budget_state/policy → conservative WIND_DOWN (kabhi
+# unbounded PROCEED nahi).
+#
+# WIND_DOWN sirf WIND_DOWN return hota hai — close-vs-callback future orchestrator
+# decide karega (yahan lock NAHI).
+# ---------------------------------------------------------------------------
+
+policies:
+  standard:
+    policy_id: standard
+    limits:
+      max_reasoning_calls: 12      # per-call ceiling (PLACEHOLDER)
+      max_turns: 20                # per-call ceiling (PLACEHOLDER)
+      max_call_seconds: 300        # per-call ceiling (PLACEHOLDER)
+      max_response_sentences: 2    # per-turn constraint (PLACEHOLDER)
+
+  short_call:
+    policy_id: short_call
+    limits:
+      max_reasoning_calls: 6
+      max_turns: 8
+      max_call_seconds: 120
+      max_response_sentences: 2

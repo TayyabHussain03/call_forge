@@ -1,0 +1,87 @@
+# ---------------------------------------------------------------------------
+# Authority Policy — commercial/execution AUTHORITY. Scope aur catalog se ALAG:
+# scope = "topic allowed?", catalog = "which services eligible?", authority =
+# "kitni execution authority milegi?". Koi service_id/claim/eligibility yahan NAHI.
+#
+# Pre-resolved single policy (global→campaign→call merging future orchestrator ka).
+# Fail-fast: unknown tier/action/commercial-kind → boot rukega.
+# Fail-closed: unknown/missing/ambiguous → most restrictive (human/denied), kabhi
+# AUTO_EXECUTE nahi.
+#
+# Precedence (deterministic, validator ke andar): DENIED > HUMAN_APPROVAL > BOUNDED
+# > AUTO. Broad auto-mapping kabhi restrictive rule ko override nahi karta.
+# ---------------------------------------------------------------------------
+
+policies:
+  standard:
+    policy_id: standard
+
+    # Default tier jab kisi action/commercial rule ka koi specific mapping na ho.
+    # Fail-closed: default HUMAN_APPROVAL_REQUIRED (auto NAHI).
+    default_tier: human_approval_required
+
+    # Action → tier. Normal conversational actions auto-execute (still ActionValidator
+    # + state machine ke through jaayenge).
+    action_tiers:
+      greet: auto_execute
+      ask_identity: auto_execute
+      introduce_reason: auto_execute
+      answer_question: auto_execute
+      offer_service: auto_execute        # catalog eligibility alag decide karega
+      ask_email: auto_execute
+      confirm_contact: auto_execute
+      clarify_contact: auto_execute
+      schedule_callback: auto_execute
+      mark_dnc: auto_execute
+      end_call: auto_execute
+
+    # Commercial rules — har commercial kind ka tier/bound.
+    commercial:
+      pricing_disclosure:
+        allowed: true                    # config permits disclosure
+        tier: policy_bounded
+      discount:
+        max_autonomous_percent: 10       # <= 10% → policy_bounded; > 10% → human approval
+        within_tier: policy_bounded
+        over_tier: human_approval_required
+      custom_pricing:
+        tier: human_approval_required
+      quotation:
+        tier: human_approval_required
+      scope_change:
+        tier: human_approval_required
+      guarantee:
+        tier: denied                     # guarantees permanently forbidden by policy
+      contractual_commitment:
+        tier: denied
+
+  # Narrowed example: no commercial autonomy at all, no disclosure.
+  no_commercial:
+    policy_id: no_commercial
+    default_tier: human_approval_required
+    action_tiers:
+      greet: auto_execute
+      answer_question: auto_execute
+      offer_service: auto_execute
+      ask_email: auto_execute
+      schedule_callback: auto_execute
+      mark_dnc: auto_execute
+      end_call: auto_execute
+    commercial:
+      pricing_disclosure:
+        allowed: false                   # disclosure not permitted → most restrictive
+        tier: human_approval_required
+      discount:
+        max_autonomous_percent: 0
+        within_tier: human_approval_required
+        over_tier: human_approval_required
+      custom_pricing:
+        tier: denied
+      quotation:
+        tier: denied
+      scope_change:
+        tier: denied
+      guarantee:
+        tier: denied
+      contractual_commitment:
+        tier: denied
