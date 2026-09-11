@@ -74,6 +74,9 @@ _PREREQUISITES: dict[str, PrerequisitePredicate] = {
     "previous_conversation_exists": lambda ctx: _is_true(
         ctx, "previous_conversation_exists"
     ),
+    "has_applicable_alternative": lambda ctx: _is_true(
+        ctx, "has_applicable_alternative"
+    ),
 }
 
 

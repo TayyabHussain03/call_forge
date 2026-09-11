@@ -8,7 +8,8 @@ SLICE 1 SCOPE: trusted priority → budget, with deterministic short-circuits
 (priority resolve → engine result; budget EARLY_EXIT/WIND_DOWN → pipeline stop;
 CONSTRAIN_RESPONSE/PROCEED → typed continuation marker). Slice 2 builds bounded
 BrainInput, calls one ReasoningProvider, then classifies scope and authority.
-Specialized resolution and every execution concern remain deliberately absent.
+Slice 3 consumes only AUTHORITY_APPROVED and delegates specialization, validation,
+and transition authority to the existing deterministic engine spine.
 
 Execution spine reuse: jab koi action deterministically execute karna ho (jaise
 priority action), orchestrator engine ke ADDITIVE `execute_approved_action(...)`
@@ -96,6 +97,14 @@ class BrainProposalStatus(str, Enum):
     PROVIDER_FAILED = "provider_failed"
 
 
+class SliceThreeOutcome(str, Enum):
+    """Outcome of deterministic processing after Slice 2 authority approval."""
+
+    EXECUTED = "executed"
+    FALLBACK = "fallback"
+    REDIRECT = "redirect"
+
+
 class TerminationRoute(str, Enum):
     """How a WIND_DOWN should be routed (orchestrator resolves, not BudgetPolicy).
 
@@ -125,6 +134,25 @@ class EffectiveAuthorityBounds:
 
     max_discount_percent: float | None = None
     pricing_disclosure_allowed: bool | None = None
+
+    @property
+    def requires_downstream_enforcement(self) -> bool:
+        """Whether execution would require a capability absent from Slice 3."""
+        return (
+            self.max_discount_percent is not None
+            or self.pricing_disclosure_allowed is not None
+        )
+
+
+@dataclass(frozen=True)
+class SliceThreeResult:
+    """Typed Slice 3 result; EXECUTED requires successful deterministic execution."""
+
+    outcome: SliceThreeOutcome
+    conversation_status: ConversationTerminationStatus
+    execution: ConversationResult | None
+    effective_bounds: EffectiveAuthorityBounds | None = None
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -211,8 +239,8 @@ class BrainOrchestrator:
     """Coordinate trusted priority/budget gates and classification-only Slice 2.
 
     Orchestrator OWNS sequencing only. Priority/budget decisions delegate hote
-    hain; only trusted pre-Brain priority actions reach the engine. Brain proposals
-    are untrusted and can only reach a policy classification in this slice.
+    hain. Brain proposals remain untrusted; only an authority-approved action can
+    reach the engine's specialized deterministic execution boundary.
 
     Attributes:
         engine: The ConversationEngine (for execute_approved_action + terminal).
@@ -498,6 +526,99 @@ class BrainOrchestrator:
             action=proposal.proposed_action,
             effective_bounds=bounds,
             **common,
+        )
+
+    def execute_slice_three(
+        self,
+        slice_two_result: TurnResult,
+        contact_understanding: ContactUnderstanding | None = None,
+    ) -> SliceThreeResult:
+        """Consume a Slice 2 result and execute only AUTHORITY_APPROVED.
+
+        ESCALATE, REDIRECT, FALLBACK, and pre-Brain stop results never reach the
+        engine. Policy bounds are preserved; bounds requiring an unavailable
+        pricing/disclosure enforcement capability fail closed.
+
+        Args:
+            slice_two_result: Immutable result produced by Slice 2.
+            contact_understanding: Untrusted contact proposal data for the
+                existing deterministic contact path.
+
+        Returns:
+            SliceThreeResult: Execution, fallback, or redirect classification.
+        """
+        if slice_two_result.outcome == TurnStageOutcome.REDIRECT:
+            return SliceThreeResult(
+                outcome=SliceThreeOutcome.REDIRECT,
+                conversation_status=slice_two_result.conversation_status,
+                execution=None,
+                effective_bounds=slice_two_result.effective_bounds,
+                reason="Slice 2 redirect is not executable",
+            )
+        if slice_two_result.outcome != TurnStageOutcome.AUTHORITY_APPROVED:
+            return SliceThreeResult(
+                outcome=SliceThreeOutcome.FALLBACK,
+                conversation_status=slice_two_result.conversation_status,
+                execution=None,
+                effective_bounds=slice_two_result.effective_bounds,
+                reason="Slice 2 result is not authority-approved",
+            )
+        if slice_two_result.action is None:
+            return SliceThreeResult(
+                outcome=SliceThreeOutcome.FALLBACK,
+                conversation_status=slice_two_result.conversation_status,
+                execution=None,
+                effective_bounds=slice_two_result.effective_bounds,
+                reason="authority approval missing action",
+            )
+        if (
+            slice_two_result.scope_policy_id is None
+            or slice_two_result.authority_policy_id is None
+        ):
+            return SliceThreeResult(
+                outcome=SliceThreeOutcome.FALLBACK,
+                conversation_status=slice_two_result.conversation_status,
+                execution=None,
+                effective_bounds=slice_two_result.effective_bounds,
+                reason="authority approval missing policy provenance",
+            )
+
+        bounds = slice_two_result.effective_bounds
+        if bounds is not None and bounds.requires_downstream_enforcement:
+            return SliceThreeResult(
+                outcome=SliceThreeOutcome.FALLBACK,
+                conversation_status=slice_two_result.conversation_status,
+                execution=None,
+                effective_bounds=bounds,
+                reason="effective bounds cannot be enforced by Slice 3",
+            )
+
+        execution = self._engine.execute_authority_approved_action(
+            slice_two_result.updated_context,
+            slice_two_result.action,
+            contact_understanding,
+        )
+        succeeded = (
+            execution.execution_required
+            and execution.approved_action is not None
+            and not execution.fallback_used
+            and execution.validation is not None
+            and execution.validation.allowed
+        )
+        return SliceThreeResult(
+            outcome=(
+                SliceThreeOutcome.EXECUTED
+                if succeeded
+                else SliceThreeOutcome.FALLBACK
+            ),
+            conversation_status=(
+                ConversationTerminationStatus.TERMINAL
+                if execution.is_terminal
+                else ConversationTerminationStatus.NOT_TERMINAL
+            ),
+            execution=execution,
+            effective_bounds=bounds,
+            reason=None if succeeded else "deterministic execution did not succeed",
         )
 
     @staticmethod

@@ -23,7 +23,7 @@ from app.contracts.contact_understanding import (
 from app.contracts.conversation import ProposedConversationDecision
 from app.contracts.conversation_context import ConversationContext
 from app.contracts.pending_contact_method import PendingContactMethod
-from app.contracts.validation import ValidationResult
+from app.contracts.validation import ValidationCategory, ValidationResult
 from app.conversation.contact.resolver import ContactResolver
 from app.conversation.guardrails.action_validator import ActionValidator
 from app.conversation.guardrails.clarification import (
@@ -475,6 +475,73 @@ class ConversationEngine:
         validator_ctx = context.to_validator_context()
         # Reuse the proven deterministic spine (validate → apply/fallback).
         return self._validate_and_apply(context, action, validator_ctx, "orchestrated")
+
+    def execute_authority_approved_action(
+        self,
+        context: ConversationContext,
+        action: AgentAction,
+        contact_understanding: ContactUnderstanding | None = None,
+    ) -> ConversationResult:
+        """Execute a Slice-2-approved action through existing specialized paths.
+
+        This method does not perform scope or authority decisions. It only routes
+        an already authority-approved action to the engine-owned deterministic
+        specialization, validation, and state-machine spine.
+
+        Args:
+            context: Trusted current conversation context.
+            action: Authority-approved proposed action.
+            contact_understanding: Untrusted contact interpretation, when the
+                approved action is contact-related.
+
+        Returns:
+            ConversationResult: Existing engine execution or recovery result.
+        """
+        if self._machine.is_terminal():
+            return self._terminal_result(context)
+
+        state = self._machine.current_state
+        validator_ctx = context.to_validator_context()
+
+        if action == AgentAction.OFFER_SERVICE:
+            if self._offering is None:
+                return self._specialized_rejection(
+                    context, action, "service offering capability unavailable"
+                )
+            return self._offer_path(context, validator_ctx)
+
+        contact_actions = frozenset(
+            {
+                AgentAction.ASK_EMAIL,
+                AgentAction.CONFIRM_CONTACT,
+                AgentAction.CLARIFY_CONTACT,
+            }
+        )
+        if action in contact_actions and state in self._CONTACT_STATES:
+            if not self._should_handle_contact(state, contact_understanding):
+                return self._specialized_rejection(
+                    context, action, "contact resolution capability/input unavailable"
+                )
+            return self._contact_path(
+                context,
+                contact_understanding,  # type: ignore[arg-type]
+                validator_ctx,
+            )
+
+        return self._validate_and_apply(context, action, validator_ctx, "slice3")
+
+    def _specialized_rejection(
+        self,
+        context: ConversationContext,
+        action: AgentAction,
+        reason: str,
+    ) -> ConversationResult:
+        """Return a fail-closed result without validation or state mutation."""
+        validation = ValidationResult.rejected(
+            ValidationCategory.MISSING_PREREQUISITE,
+            reason=reason,
+        )
+        return self._rejected_result(context, action, validation, "specialized")
 
     def process_turn(
         self,
