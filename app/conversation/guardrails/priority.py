@@ -22,13 +22,26 @@ callback jaise cases bina redesign add ho sakein.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import Enum
 from typing import Any
 
-from app.core.constants import AgentAction, ConversationState, Intent
+from app.core.constants import AgentAction, ConversationState
+
+
+class TrustedPriorityOutcome(str, Enum):
+    """Priority outcome established by a trusted deterministic boundary.
+
+    ``NONE`` is the fail-closed value when priority information is absent,
+    ambiguous, or only available as an untrusted intent classification.
+    """
+
+    NONE = "none"
+    DNC = "dnc"
+    NOT_INTERESTED = "not_interested"
 
 
 def resolve_priority_action(
-    intent: Intent,
+    outcome: TrustedPriorityOutcome,
     state: ConversationState,
     context: Mapping[str, Any] | None = None,
 ) -> AgentAction | None:
@@ -45,7 +58,8 @@ def resolve_priority_action(
     sakein — Sitting 2B inhe use nahi karti.
 
     Args:
-        intent: Client ka classified intent (primary signal).
+        outcome: Trusted validated priority outcome. Untrusted intent is not an
+            accepted input to this boundary.
         state: Current conversational state (future use; abhi ignore).
         context: Read-only conversation context (future use; abhi ignore). Ye
             function ise mutate nahi karta.
@@ -54,12 +68,17 @@ def resolve_priority_action(
         AgentAction | None: Forced deterministic action, ya None agar koi
         priority rule apply nahi hoti.
     """
+    # Runtime trust guard: a same-valued enum/string from an untrusted provider is
+    # not accepted merely because Python string-enum equality happens to match.
+    if not isinstance(outcome, TrustedPriorityOutcome):
+        return None
+
     # DNC: highest priority. Kisi bhi proposed sales action ko override karta hai.
-    if intent == Intent.DO_NOT_CALL:
+    if outcome == TrustedPriorityOutcome.DNC:
         return AgentAction.MARK_DNC
 
     # NOT_INTERESTED: deterministic close, no persuasion.
-    if intent == Intent.NOT_INTERESTED:
+    if outcome == TrustedPriorityOutcome.NOT_INTERESTED:
         return AgentAction.END_CALL
 
     # Koi priority rule nahi — normal flow.

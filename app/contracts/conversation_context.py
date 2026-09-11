@@ -42,7 +42,8 @@ class ConversationContext:
             nahi.
         contact_confirmed: Kya candidate client ne confirm kiya.
         callback: Callback context/time string agar mila.
-        dnc_pending: Kya client ne DNC maanga (validator safety-net isse dekhta).
+        dnc_pending: Trusted deterministic DNC path ne request establish ki hai
+            (validator safety-net isse dekhta). Untrusted intent isse set nahi karta.
         interest_preserved: True jab busy→callback ne interest barqarar rakha.
         call_number: TRUSTED telephony session number (E.164). Caller/application
             populate karta hai — LLM/transcript ise mutate NAHI kar sakta.

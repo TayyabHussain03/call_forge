@@ -32,7 +32,10 @@ from app.conversation.guardrails.clarification import (
     ClarificationState,
 )
 from app.conversation.guardrails.fallbacks import FallbackDecision, FallbackEngine
-from app.conversation.guardrails.priority import resolve_priority_action
+from app.conversation.guardrails.priority import (
+    TrustedPriorityOutcome,
+    resolve_priority_action,
+)
 from app.conversation.state_machine.machine import ConversationStateMachine
 from app.core.constants import AgentAction, ConversationState
 from app.core.exceptions import StateTransitionError, ValidationError
@@ -440,15 +443,49 @@ class ConversationEngine:
         {ConversationState.COLLECT_EMAIL, ConversationState.CONFIRM_CONTACT}
     )
 
+    def execute_approved_action(
+        self,
+        context: ConversationContext,
+        action: AgentAction,
+    ) -> ConversationResult:
+        """Execute an already-routed action through the deterministic spine only.
+
+        ADDITIVE entry-point for the BrainOrchestrator (composition boundary). Ye
+        `process_turn` se ALAG hai aur usse touch nahi karta — koi second
+        orchestration path nahi banata. Ye upstream decisions (priority, Brain,
+        scope, authority, budget) DUBARA nahi karta; woh orchestrator kar chuka
+        hota hai. Ye SIRF engine-owned execution spine chalata hai:
+
+            validate (mandatory) → state machine → transition/context
+            (rejection → deterministic fallback, jaisा spine already karta hai)
+
+        Validation state-mutation se pehle MANDATORY hai; state machine final
+        authority rehti hai. Terminal guard yahan bhi apply hota hai.
+
+        Args:
+            context: Current session context (trusted, orchestrator-assembled).
+            action: The already-routed/approved action to execute.
+
+        Returns:
+            ConversationResult: Applied transition, rejection, or fallback result.
+        """
+        # Terminal guard — already terminal to koi execution nahi.
+        if self._machine.is_terminal():
+            return self._terminal_result(context)
+        validator_ctx = context.to_validator_context()
+        # Reuse the proven deterministic spine (validate → apply/fallback).
+        return self._validate_and_apply(context, action, validator_ctx, "orchestrated")
+
     def process_turn(
         self,
         context: ConversationContext,
         proposal: ProposedConversationDecision,
         contact_understanding: ContactUnderstanding | None = None,
+        trusted_priority: TrustedPriorityOutcome = TrustedPriorityOutcome.NONE,
     ) -> ConversationResult:
         """Process one conversation turn deterministically.
 
-        Precedence: terminal → priority (DNC/not-interested) → contact
+        Precedence: terminal → trusted priority (DNC/not-interested) → contact
         understanding+resolution (contact turns) → normal action.
 
         LLM ka `proposed_next_state` IGNORE hota hai. Priority contact-resolution
@@ -461,6 +498,8 @@ class ConversationEngine:
             proposal: Untrusted LLM proposal (intent + action; next_state ignore).
             contact_understanding: Optional structured contact interpretation.
                 Sirf contact-states mein resolver+clarification trigger karta hai.
+            trusted_priority: Outcome established outside the untrusted proposal
+                by a trusted deterministic validation boundary. Defaults to NONE.
 
         Returns:
             ConversationResult: Structured, invariant-consistent result. Caller
@@ -473,9 +512,10 @@ class ConversationEngine:
         current_state = self._machine.current_state
         validator_ctx = context.to_validator_context()
 
-        # 2. Priority resolution — resolution se PEHLE (DNC/not-interested win).
+        # 2. Trusted priority resolution — resolution se PEHLE. The proposal's
+        #    untrusted detected_intent cannot authorize DNC or termination.
         priority_action = resolve_priority_action(
-            proposal.detected_intent.intent, current_state, validator_ctx
+            trusted_priority, current_state, validator_ctx
         )
         if priority_action is not None:
             return self._validate_and_apply(

@@ -85,41 +85,47 @@ fallbacks:
 states:
 
   new_call:
-    actions: [greet]
+    actions: [greet, mark_dnc]
     transitions:
       greet: { to: greeting }
+      mark_dnc: { to: end_call, outcome: do_not_call }
 
   greeting:
-    actions: [ask_identity, end_call]
+    actions: [ask_identity, mark_dnc, end_call]
     transitions:
       ask_identity: { to: identify_person }
+      mark_dnc: { to: end_call, outcome: do_not_call }
       end_call: { to: end_call, outcome: failed }
 
   identify_person:
-    actions: [introduce_reason, ask_identity, end_call]
+    actions: [introduce_reason, ask_identity, mark_dnc, end_call]
     transitions:
       # Machine ke bahar load hui memory decide karti hai introduce vs follow_up.
       introduce_reason: { to: introduce }
       # follow_up transition ke liye previous conversation context chahiye.
       ask_identity: { to: identify_decision_maker }
+      mark_dnc: { to: end_call, outcome: do_not_call }
       end_call: { to: end_call, outcome: wrong_number }
 
   # Follow-up entry — sirf tab valid jab previous conversation context ho.
   follow_up:
-    actions: [introduce_reason]
+    actions: [introduce_reason, mark_dnc]
     requires: [previous_conversation_exists]
     transitions:
       introduce_reason: { to: reason_for_call }
+      mark_dnc: { to: end_call, outcome: do_not_call }
 
   introduce:
-    actions: [introduce_reason]
+    actions: [introduce_reason, mark_dnc]
     transitions:
       introduce_reason: { to: reason_for_call }
+      mark_dnc: { to: end_call, outcome: do_not_call }
 
   reason_for_call:
-    actions: [introduce_reason]
+    actions: [introduce_reason, mark_dnc]
     transitions:
       introduce_reason: { to: listen }
+      mark_dnc: { to: end_call, outcome: do_not_call }
 
   # Hub state — interest reading yahan hoti hai. Yahan se main branches nikalti hain.
   listen:

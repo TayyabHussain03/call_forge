@@ -139,7 +139,7 @@ class ActionValidator:
         ctx: Mapping[str, Any] = context or {}
 
         # 0. DNC defensive safety-net. Agar context bataye ke client ne DNC maanga
-        #    hai (intent do_not_call), to koi bhi non-DNC/non-terminating action
+        #    hai (trusted priority path), to koi bhi non-DNC/non-terminating action
         #    defensively reject — chahe woh structurally eligible ho. Ye primary
         #    decision NAHI hai (woh resolve_priority_action karta hai); ye us
         #    decision ke bypass hone ki soorat mein ek safety net hai.

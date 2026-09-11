@@ -85,6 +85,32 @@ class Tone(StrEnum):
     HOSTILE = "hostile"
 
 
+class TopicCategory(StrEnum):
+    """Structured topic categories proposed to deterministic scope policy."""
+
+    BUSINESS_QUESTION = "business_question"
+    SERVICE_DISCUSSION = "service_discussion"
+    OBJECTION = "objection"
+    CALLBACK = "callback"
+    CONTACT_COLLECTION = "contact_collection"
+    COMMERCIAL_REQUEST = "commercial_request"
+    QUALIFICATION = "qualification"
+    OFF_TOPIC = "off_topic"
+    UNKNOWN = "unknown"
+
+
+class CommercialRequestKind(StrEnum):
+    """Commercial request kinds classified by deterministic authority policy."""
+
+    PRICING_DISCLOSURE = "pricing_disclosure"
+    DISCOUNT = "discount"
+    CUSTOM_PRICING = "custom_pricing"
+    QUOTATION = "quotation"
+    SCOPE_CHANGE = "scope_change"
+    GUARANTEE = "guarantee"
+    CONTRACTUAL_COMMITMENT = "contractual_commitment"
+
+
 class LeadStatus(StrEnum):
     """Overall pipeline status of a lead (dashboard lists isi par bante hain)."""
 
