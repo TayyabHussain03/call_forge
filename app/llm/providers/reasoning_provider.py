@@ -30,8 +30,20 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 
 from app.brain.contracts import BrainInput, BrainProposal
+
+
+class ProviderFailureKind(str, Enum):
+    """Small stable taxonomy for provider and response-boundary failures."""
+
+    TRANSPORT_FAILURE = "transport_failure"
+    TIMEOUT = "timeout"
+    RATE_LIMITED = "rate_limited"
+    AUTH_FAILURE = "auth_failure"
+    INVALID_RESPONSE = "invalid_response"
+    SCHEMA_VALIDATION_FAILURE = "schema_validation_failure"
 
 
 class ReasoningError(Exception):
@@ -41,6 +53,15 @@ class ReasoningError(Exception):
     providers) → ye exception. Domain fallback/policy NAHI — upper layer decide
     karti hai. Jaan-boojh kar ek clean boundary; 15 speculative subclasses nahi.
     """
+
+    def __init__(
+        self,
+        message: str,
+        kind: ProviderFailureKind = ProviderFailureKind.TRANSPORT_FAILURE,
+    ) -> None:
+        """Create a sanitized application-level provider failure."""
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
