@@ -23,6 +23,10 @@ from app.conversation.response_planning.contracts import (
     InterruptionContext,
     ResponsePlan,
 )
+from app.conversation.response_rendering.contracts import (
+    RenderedResponse,
+    TrustedRenderingContext,
+)
 from app.core.constants import AgentAction, ConversationState
 
 
@@ -69,6 +73,7 @@ class SimulationTurn:
     interruption: InterruptionContext = InterruptionContext()
     explanation_need: ExplanationNeed = ExplanationNeed.STANDARD
     previous_acknowledgement: AcknowledgementKind = AcknowledgementKind.NONE
+    trusted_rendering_context: TrustedRenderingContext = TrustedRenderingContext()
     expected: ExpectedTurnOutcome | None = None
 
 
@@ -109,6 +114,7 @@ class TurnTrace:
     contact_channel: str | None = None
     persistence_intent_created: bool = False
     response_plan: ResponsePlan | None = None
+    rendered_response: RenderedResponse | None = None
     expectation_met: bool | None = None
 
 

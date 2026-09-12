@@ -33,6 +33,11 @@ from app.conversation.response_planning.contracts import (
     ResponsePlanningInput,
 )
 from app.conversation.response_planning.planner import ResponsePlanner
+from app.conversation.response_rendering.contracts import (
+    ResponseRenderInput,
+    ResponseRenderingBudget,
+)
+from app.conversation.response_rendering.renderer import DeterministicResponseRenderer
 from app.conversation.state_machine.machine import ConversationStateMachine
 from app.conversation.state_machine.states import load_config
 from app.llm.providers.reasoning_provider import MockReasoningProvider
@@ -73,6 +78,7 @@ def run_scenario(scenario: SimulationScenario) -> SimulationResult:
     traces: list[TurnTrace] = []
     reasoning_calls = 0
     response_planner = ResponsePlanner()
+    response_renderer = DeterministicResponseRenderer()
 
     for turn_index, turn in enumerate(scenario.turns):
         if machine.is_terminal():
@@ -135,6 +141,17 @@ def run_scenario(scenario: SimulationScenario) -> SimulationResult:
                 previous_acknowledgement=turn.previous_acknowledgement,
             )
         )
+        rendered_response = response_renderer.render(
+            ResponseRenderInput(
+                plan=response_plan,
+                authoritative_result=_response_result(slice_two.outcome, slice_three),
+                budget=ResponseRenderingBudget(
+                    max_sentences=budget_policy.limits.max_response_sentences
+                ),
+                trusted_context=turn.trusted_rendering_context,
+                variation_seed=f"{scenario.scenario_id}:{turn_index}",
+            )
+        )
         trace = TurnTrace(
             turn_index=turn_index,
             starting_state=starting_state,
@@ -179,6 +196,7 @@ def run_scenario(scenario: SimulationScenario) -> SimulationResult:
                 execution.contact_to_persist is not None if execution is not None else False
             ),
             response_plan=response_plan,
+            rendered_response=rendered_response,
             expectation_met=_matches(turn.expected, slice_two.outcome, slice_three, machine),
         )
         traces.append(trace)
