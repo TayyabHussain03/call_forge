@@ -1,0 +1,189 @@
+"""Typed, bounded contracts for post-decision conversation strategy.
+
+These contracts describe how to communicate an authoritative result. They carry
+no transition, persistence, contact-confirmation, service, pricing, discount, or
+human-approval authority.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+from app.core.constants import AgentAction, ConversationState, Tone
+
+
+class ResponseLength(str, Enum):
+    """Adaptive amount of explanation; no fixed sentence count is implied."""
+
+    SHORT = "short"
+    MODERATE = "moderate"
+    DETAILED = "detailed"
+
+
+class ExplanationNeed(str, Enum):
+    """Trusted/advisory indication of how much useful explanation is needed."""
+
+    SIMPLE = "simple"
+    STANDARD = "standard"
+    COMPLEX = "complex"
+
+
+class InterruptionCategory(str, Enum):
+    """Advisory semantic classification; it grants no execution authority."""
+
+    ANSWER = "answer"
+    QUESTION = "question"
+    OBJECTION = "objection"
+    CORRECTION = "correction"
+    TOPIC_SHIFT = "topic_shift"
+    CLARIFICATION = "clarification"
+    ADDRESSEE_UNCERTAIN = "addressee_uncertain"
+    OTHER = "other"
+
+
+class AddresseeStatus(str, Enum):
+    """Who a prospect utterance is understood to address."""
+
+    ADDRESSED_TO_AGENT = "addressed_to_agent"
+    NOT_ADDRESSED_TO_AGENT = "not_addressed_to_agent"
+    ADDRESSEE_UNCERTAIN = "addressee_uncertain"
+
+
+class AcknowledgementKind(str, Enum):
+    """Optional acknowledgement style, kept semantic rather than final prose."""
+
+    NONE = "none"
+    GOT_IT = "got_it"
+    MAKES_SENSE = "makes_sense"
+    OKAY = "okay"
+    RIGHT = "right"
+    UNDERSTOOD = "understood"
+
+
+class ConversationMove(str, Enum):
+    """The single primary communication objective for the next response."""
+
+    COMMUNICATE_RESULT = "communicate_result"
+    ANSWER_CURRENT_QUESTION = "answer_current_question"
+    EXPLORE_OBJECTION = "explore_objection"
+    INCORPORATE_CORRECTION = "incorporate_correction"
+    FOLLOW_NEW_DIRECTION = "follow_new_direction"
+    CLARIFY_MEANING = "clarify_meaning"
+    CLARIFY_ADDRESSEE = "clarify_addressee"
+    CONTINUE_PRIOR_CONTEXT = "continue_prior_context"
+    SAFE_RECOVERY = "safe_recovery"
+    REDIRECT_SAFELY = "redirect_safely"
+    ACKNOWLEDGE_ESCALATION = "acknowledge_escalation"
+
+
+class QuestionStrategy(str, Enum):
+    """Whether and why a follow-up question is useful."""
+
+    NONE = "none"
+    ANSWER_THEN_FOLLOW_UP = "answer_then_follow_up"
+    EXPLORE_WITH_ONE_QUESTION = "explore_with_one_question"
+    CLARIFY_CURRENT_INPUT = "clarify_current_input"
+    CONFIRM_ADDRESSEE = "confirm_addressee"
+
+
+class InterruptionHandling(str, Enum):
+    """How an unfinished prior point relates to the new response."""
+
+    NONE = "none"
+    INTEGRATE_IF_USEFUL = "integrate_if_useful"
+    DROP_STALE_POINT = "drop_stale_point"
+    HOLD_PRIOR_CONTEXT = "hold_prior_context"
+
+
+class AuthoritativeResultKind(str, Enum):
+    """Normalized read-only result supplied by the deterministic pipeline."""
+
+    EXECUTED = "executed"
+    FALLBACK = "fallback"
+    REDIRECT = "redirect"
+    ESCALATE = "escalate"
+    PIPELINE_STOPPED = "pipeline_stopped"
+    AUTHORITY_APPROVED = "authority_approved"
+
+
+@dataclass(frozen=True)
+class VoiceActivityMetadata:
+    """Future-runtime metadata only; no audio processing occurs here."""
+
+    barge_in_detected: bool = False
+    overlapping_speech: bool = False
+    speech_started_during_agent_output: bool = False
+
+
+@dataclass(frozen=True)
+class PendingConversationIntent:
+    """At most one bounded unfinished conversational intent, never reasoning."""
+
+    goal: str
+    summary: str
+    completed: bool = False
+    still_relevant: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.goal.strip() or len(self.goal) > 120:
+            raise ValueError("pending goal must contain 1-120 characters")
+        if not self.summary.strip() or len(self.summary) > 240:
+            raise ValueError("pending summary must contain 1-240 characters")
+
+    @property
+    def active(self) -> bool:
+        """Whether this point may be integrated into a later response."""
+        return not self.completed and self.still_relevant
+
+
+@dataclass(frozen=True)
+class InterruptionContext:
+    """Bounded continuity metadata about an interrupted prior response."""
+
+    was_interrupted: bool = False
+    category: InterruptionCategory = InterruptionCategory.OTHER
+    previous_intent: PendingConversationIntent | None = None
+    voice_activity: VoiceActivityMetadata = VoiceActivityMetadata()
+
+
+@dataclass(frozen=True)
+class ResponsePlanningInput:
+    """Bounded post-decision input assembled by trusted application code."""
+
+    authoritative_state: ConversationState
+    authoritative_result: AuthoritativeResultKind
+    current_prospect_message: str
+    approved_action: AgentAction | None = None
+    tone: Tone = Tone.NEUTRAL
+    conversation_category: InterruptionCategory = InterruptionCategory.OTHER
+    addressee_status: AddresseeStatus = AddresseeStatus.ADDRESSED_TO_AGENT
+    interruption: InterruptionContext = InterruptionContext()
+    explanation_need: ExplanationNeed = ExplanationNeed.STANDARD
+    trusted_context_summary: tuple[str, ...] = ()
+    previous_acknowledgement: AcknowledgementKind = AcknowledgementKind.NONE
+
+    def __post_init__(self) -> None:
+        if len(self.current_prospect_message) > 2000:
+            raise ValueError("current prospect message exceeds bounded length")
+        if len(self.trusted_context_summary) > 6:
+            raise ValueError("trusted context summary exceeds six items")
+        if any(len(item) > 240 for item in self.trusted_context_summary):
+            raise ValueError("trusted context summary item exceeds bounded length")
+
+
+@dataclass(frozen=True)
+class ResponsePlan:
+    """Communication strategy only; final prose and execution are both absent."""
+
+    communicative_goal: ConversationMove
+    response_length: ResponseLength
+    tone: Tone
+    acknowledgement: AcknowledgementKind
+    question_strategy: QuestionStrategy
+    clarification_required: bool
+    interruption_handling: InterruptionHandling
+    resume_previous_point: bool
+    pending_intent: PendingConversationIntent | None
+    addressee_status: AddresseeStatus
+    trusted_context_summary: tuple[str, ...] = ()

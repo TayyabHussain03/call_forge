@@ -28,6 +28,11 @@ from app.conversation.engine import ConversationEngine
 from app.conversation.guardrails.action_validator import ActionValidator
 from app.conversation.guardrails.clarification import ClarificationEngine
 from app.conversation.guardrails.fallbacks import FallbackEngine
+from app.conversation.response_planning.contracts import (
+    AuthoritativeResultKind,
+    ResponsePlanningInput,
+)
+from app.conversation.response_planning.planner import ResponsePlanner
 from app.conversation.state_machine.machine import ConversationStateMachine
 from app.conversation.state_machine.states import load_config
 from app.llm.providers.reasoning_provider import MockReasoningProvider
@@ -67,6 +72,7 @@ def run_scenario(scenario: SimulationScenario) -> SimulationResult:
     context = scenario.initial_context
     traces: list[TurnTrace] = []
     reasoning_calls = 0
+    response_planner = ResponsePlanner()
 
     for turn_index, turn in enumerate(scenario.turns):
         if machine.is_terminal():
@@ -116,6 +122,19 @@ def run_scenario(scenario: SimulationScenario) -> SimulationResult:
             if slice_three is not None
             else slice_two.conversation_status
         )
+        response_plan = response_planner.plan(
+            ResponsePlanningInput(
+                authoritative_state=machine.current_state,
+                authoritative_result=_response_result(slice_two.outcome, slice_three),
+                current_prospect_message=turn.utterance[:2000],
+                approved_action=(execution.approved_action if execution is not None else None),
+                conversation_category=turn.conversation_category,
+                addressee_status=turn.addressee_status,
+                interruption=turn.interruption,
+                explanation_need=turn.explanation_need,
+                previous_acknowledgement=turn.previous_acknowledgement,
+            )
+        )
         trace = TurnTrace(
             turn_index=turn_index,
             starting_state=starting_state,
@@ -159,6 +178,7 @@ def run_scenario(scenario: SimulationScenario) -> SimulationResult:
             persistence_intent_created=(
                 execution.contact_to_persist is not None if execution is not None else False
             ),
+            response_plan=response_plan,
             expectation_met=_matches(turn.expected, slice_two.outcome, slice_three, machine),
         )
         traces.append(trace)
@@ -173,6 +193,20 @@ def run_scenario(scenario: SimulationScenario) -> SimulationResult:
         expectations_met=all(expectation_values),
         actor_role=scenario.actor_role,
     )
+
+
+def _response_result(pipeline, slice_three) -> AuthoritativeResultKind:
+    """Normalize existing pipeline results for read-only response planning."""
+    if slice_three is not None:
+        return AuthoritativeResultKind(slice_three.outcome.value)
+    mapping = {
+        TurnStageOutcome.FALLBACK: AuthoritativeResultKind.FALLBACK,
+        TurnStageOutcome.REDIRECT: AuthoritativeResultKind.REDIRECT,
+        TurnStageOutcome.ESCALATE: AuthoritativeResultKind.ESCALATE,
+        TurnStageOutcome.PIPELINE_STOPPED: AuthoritativeResultKind.PIPELINE_STOPPED,
+        TurnStageOutcome.AUTHORITY_APPROVED: AuthoritativeResultKind.AUTHORITY_APPROVED,
+    }
+    return mapping[pipeline]
 
 
 def _build_offering(campaign_id: str | None, machine_config) -> ServiceOfferingService | None:

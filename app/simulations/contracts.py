@@ -15,6 +15,14 @@ from app.contracts.contact_understanding import ContactUnderstanding
 from app.contracts.conversation_context import ConversationContext
 from app.contracts.validation import ValidationCategory
 from app.conversation.guardrails.priority import TrustedPriorityOutcome
+from app.conversation.response_planning.contracts import (
+    AddresseeStatus,
+    AcknowledgementKind,
+    ExplanationNeed,
+    InterruptionCategory,
+    InterruptionContext,
+    ResponsePlan,
+)
 from app.core.constants import AgentAction, ConversationState
 
 
@@ -56,6 +64,11 @@ class SimulationTurn:
     proposal: BrainProposal | None = None
     provider_failure: bool = False
     contact_understanding: ContactUnderstanding | None = None
+    conversation_category: InterruptionCategory = InterruptionCategory.OTHER
+    addressee_status: AddresseeStatus = AddresseeStatus.ADDRESSED_TO_AGENT
+    interruption: InterruptionContext = InterruptionContext()
+    explanation_need: ExplanationNeed = ExplanationNeed.STANDARD
+    previous_acknowledgement: AcknowledgementKind = AcknowledgementKind.NONE
     expected: ExpectedTurnOutcome | None = None
 
 
@@ -95,6 +108,7 @@ class TurnTrace:
     selected_service_id: str | None = None
     contact_channel: str | None = None
     persistence_intent_created: bool = False
+    response_plan: ResponsePlan | None = None
     expectation_met: bool | None = None
 
 
