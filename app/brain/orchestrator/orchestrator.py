@@ -58,6 +58,7 @@ from app.conversation.guardrails.priority import (
 from app.core.constants import (
     AgentAction,
     CommercialRequestKind,
+    ConversationState,
     Intent,
     Tone,
     TopicCategory,
@@ -272,6 +273,11 @@ class BrainOrchestrator:
         self._reasoning = reasoning_provider
         self._scope = scope_validator or ScopePolicyValidator()
         self._authority = authority_validator or AuthorityPolicyValidator()
+
+    @property
+    def current_state(self) -> ConversationState:
+        """Expose the authoritative machine state for downstream composition."""
+        return self._engine.machine.current_state
 
     def process_turn(
         self,

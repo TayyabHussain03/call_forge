@@ -13,6 +13,7 @@ from app.conversation.response_planning.contracts import (
 )
 from app.runtime.contracts import (
     ActiveDelivery,
+    CoordinatedTurnOutput,
     CoordinatedUserTurn,
     CoordinationOutcome,
     CoordinationResult,
@@ -189,6 +190,7 @@ class TurnCoordinator:
             CoordinationOutcome.TURN_PROCESSED,
             instructions=tuple(instructions),
             processed_turn=turn,
+            turn_output=output,
         )
 
     def _delivery_update(
@@ -283,6 +285,7 @@ class TurnCoordinator:
         *,
         instructions: tuple[DeliveryInstruction, ...] = (),
         processed_turn: CoordinatedUserTurn | None = None,
+        turn_output: CoordinatedTurnOutput | None = None,
     ) -> CoordinationResult:
         return CoordinationResult(
             outcome,
@@ -290,4 +293,5 @@ class TurnCoordinator:
             instructions,
             processed_turn,
             failure,
+            turn_output,
         )

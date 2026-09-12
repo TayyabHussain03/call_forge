@@ -8,6 +8,7 @@ from typing import Protocol
 
 from app.conversation.response_planning.contracts import (
     AddresseeStatus,
+    AuthoritativeResultKind,
     InterruptionCategory,
     InterruptionContext,
     ResponsePlan,
@@ -111,6 +112,8 @@ class CoordinatedTurnOutput:
     response_plan: ResponsePlan
     rendered_response: RenderedResponse
     unfinished_point_summary: str | None = None
+    pipeline_outcome: AuthoritativeResultKind | None = None
+    conversation_terminal: bool = False
 
     def __post_init__(self) -> None:
         if self.unfinished_point_summary is not None and len(
@@ -179,3 +182,4 @@ class CoordinationResult:
     instructions: tuple[DeliveryInstruction, ...] = ()
     processed_turn: CoordinatedUserTurn | None = None
     failure: RuntimeFailureKind | None = None
+    turn_output: CoordinatedTurnOutput | None = None
