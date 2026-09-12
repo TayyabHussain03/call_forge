@@ -7,6 +7,8 @@ from dataclasses import fields
 import pytest
 
 from app.config.settings import get_settings
+from app.contracts.conversation_context import ConversationContext
+from app.conversation.context.builder import LeanContextBuildInput, LeanContextBuilder
 from app.conversation.prospect_intelligence.contracts import (
     DecisionAuthority,
     InferenceCandidate,
@@ -57,14 +59,23 @@ def _strategy():  # type: ignore[no-untyped-def]
 
 
 def _input(sequence: int = 1, turn_id: str = "turn-1") -> SupervisorInput:
+    lean = LeanContextBuilder().build(
+        LeanContextBuildInput(
+            call_id="call",
+            current_turn_id=turn_id,
+            current_turn_sequence=sequence,
+            current_user_message="bounded completed-turn excerpt",
+            current_state=ConversationState.LISTEN,
+            conversation_context=ConversationContext("call"),
+            strategy=_strategy(),
+            prospect_intelligence=ProspectIntelligenceSnapshot(),
+        )
+    )
     return SupervisorInput(
         call_id="call",
         turn_id=turn_id,
         source_turn_sequence=sequence,
-        current_turn_excerpt="bounded completed-turn excerpt",
-        current_state=ConversationState.LISTEN,
-        prospect_intelligence=ProspectIntelligenceSnapshot(),
-        conversation_strategy=_strategy(),
+        context=LeanContextBuilder.for_supervisor(lean),
     )
 
 
@@ -382,14 +393,15 @@ def test_supervisor_input_is_bounded_and_excludes_full_transcript() -> None:
 
     assert "full_transcript" not in names
     with pytest.raises(ValueError):
-        SupervisorInput(
-            call_id="call",
-            turn_id="turn-1",
-            source_turn_sequence=1,
-            current_turn_excerpt="x" * 501,
-            current_state=ConversationState.LISTEN,
-            prospect_intelligence=ProspectIntelligenceSnapshot(),
-            conversation_strategy=_strategy(),
+        LeanContextBuilder().build(
+            LeanContextBuildInput(
+                call_id="call",
+                current_turn_id="turn-1",
+                current_turn_sequence=1,
+                current_user_message=" ",
+                current_state=ConversationState.LISTEN,
+                conversation_context=ConversationContext("call"),
+            )
         )
 
 

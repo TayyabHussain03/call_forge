@@ -23,6 +23,7 @@ from app.brain.business_intelligence import (
 )
 from app.contracts.contact_understanding import ContactUnderstanding
 from app.conversation.prospect_intelligence.contracts import ProspectIntelligenceSummary
+from app.conversation.context.contracts import BrainContextView
 from app.conversation.strategy.contracts import ConversationStrategy
 from app.core.constants import (
     AgentAction,
@@ -116,6 +117,7 @@ class BrainInput:
     resolved_contact_context: str | None = None
     conversation_strategy: ConversationStrategy | None = None
     prospect_intelligence: ProspectIntelligenceSummary | None = None
+    lean_context: BrainContextView | None = None
 
 
 @dataclass(frozen=True)

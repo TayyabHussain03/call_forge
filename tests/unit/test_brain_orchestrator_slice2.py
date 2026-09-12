@@ -324,12 +324,13 @@ def test_brain_input_is_bounded_and_immutable_snapshot() -> None:
     _run(CaptureProvider(default=_proposal()), snapshot=snapshot)
 
     brain_input = captured[0]
-    assert len(brain_input.current_utterance) == 8000
-    assert len(brain_input.current_goal) == 200
-    assert len(brain_input.recent_turns) == 6
-    assert all(len(turn) <= 1000 for turn in brain_input.recent_turns)
+    assert len(brain_input.current_utterance) == 2000
+    assert brain_input.current_goal is None
+    assert len(brain_input.recent_turns) == 4
+    assert all(len(turn) <= 300 for turn in brain_input.recent_turns)
     assert brain_input.current_state.value == "new_call"
-    assert brain_input.recent_turns[0].startswith("2")
+    assert brain_input.recent_turns[0].startswith("4")
+    assert brain_input.lean_context is not None
 
 
 def test_missing_slice_two_inputs_fail_closed_before_provider() -> None:

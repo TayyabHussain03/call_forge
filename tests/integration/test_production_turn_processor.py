@@ -21,6 +21,7 @@ from app.config.settings import get_settings
 from app.contracts.contact_understanding import ContactIntent
 from app.contracts.conversation_context import ConversationContext
 from app.conversation.contact.resolver import ContactResolver
+from app.conversation.context.builder import LeanContextBuildInput, LeanContextBuilder
 from app.conversation.engine import ConversationEngine
 from app.conversation.guardrails.action_validator import ActionValidator
 from app.conversation.guardrails.clarification import ClarificationEngine
@@ -379,13 +380,23 @@ def test_supervisor_failure_does_not_trigger_fast_path_fallback() -> None:
             "call",
             "turn-1",
             1,
-            "bounded summary",
-            ConversationState.NEW_CALL,
-            ProspectIntelligenceSnapshot(),
-            ConversationStrategyEngine().recommend(
-                ConversationStrategyInput(
-                    SalesStage.OPENING,
-                    ConversationState.NEW_CALL,
+            LeanContextBuilder.for_supervisor(
+                LeanContextBuilder().build(
+                    LeanContextBuildInput(
+                        call_id="call",
+                        current_turn_id="turn-1",
+                        current_turn_sequence=1,
+                        current_user_message="bounded summary",
+                        current_state=ConversationState.NEW_CALL,
+                        conversation_context=ConversationContext("call"),
+                        prospect_intelligence=ProspectIntelligenceSnapshot(),
+                        strategy=ConversationStrategyEngine().recommend(
+                            ConversationStrategyInput(
+                                SalesStage.OPENING,
+                                ConversationState.NEW_CALL,
+                            )
+                        ),
+                    )
                 )
             ),
         )

@@ -55,6 +55,8 @@ from app.conversation.guardrails.priority import (
     TrustedPriorityOutcome,
     resolve_priority_action,
 )
+from app.conversation.context.builder import LeanContextBuildInput, LeanContextBuilder
+from app.conversation.context.contracts import BrainContextView, RecentTurn, TurnSpeaker
 from app.conversation.prospect_intelligence.contracts import ProspectIntelligenceSummary
 from app.conversation.strategy.contracts import ConversationStrategy
 from app.core.constants import (
@@ -131,6 +133,7 @@ class BrainSnapshotInput:
     resolved_contact_context: str | None = None
     conversation_strategy: ConversationStrategy | None = None
     prospect_intelligence: ProspectIntelligenceSummary | None = None
+    lean_context: BrainContextView | None = None
 
 
 @dataclass(frozen=True)
@@ -423,24 +426,50 @@ class BrainOrchestrator:
                 notes="missing Slice-2 dependency or trusted input",
             )
 
+        lean_context = snapshot.lean_context
+        if lean_context is None:
+            lean = LeanContextBuilder().build(
+                LeanContextBuildInput(
+                    call_id=context.call_id,
+                    current_turn_id="current",
+                    current_turn_sequence=len(snapshot.recent_turns) + 1,
+                    current_user_message=snapshot.current_utterance,
+                    current_state=self._engine.machine.current_state,
+                    conversation_context=context,
+                    strategy=snapshot.conversation_strategy,
+                    recent_turns=tuple(
+                        RecentTurn(
+                            f"recent-{index}",
+                            TurnSpeaker.USER,
+                            value[:300],
+                        )
+                        for index, value in enumerate(snapshot.recent_turns)
+                        if value.strip()
+                    ),
+                    prospect_summary=snapshot.prospect_intelligence,
+                    authority_policy=authority_policy,
+                    business_intelligence=snapshot.business_intelligence,
+                )
+            )
+            lean_context = LeanContextBuilder.for_brain(lean)
+        lean = lean_context.turn
         brain_input = BrainInput(
-            current_utterance=snapshot.current_utterance[:8000],
-            current_state=self._engine.machine.current_state,
-            current_goal=_bounded_optional(snapshot.current_goal, 200),
-            recent_turns=tuple(turn[:1000] for turn in snapshot.recent_turns[-6:]),
-            business_intelligence=snapshot.business_intelligence,
-            known_signals=frozenset(sorted(context.known_signals)[:32]),
-            eligible_service_ids=context.eligible_alternative_service_ids[:32],
-            offered_service_ids=context.offered_service_ids[:32],
-            campaign_policy_summary=_bounded_optional(
-                snapshot.campaign_policy_summary, 1000
+            current_utterance=lean.untrusted_user_input.message,
+            current_state=lean.current_state,
+            current_goal=(
+                lean.strategy.communication_goal if lean.strategy is not None else None
             ),
+            recent_turns=tuple(item.content for item in lean.recent_turns),
+            business_intelligence=None,
+            known_signals=frozenset(),
+            eligible_service_ids=lean.eligible_service_ids,
+            offered_service_ids=lean.offered_service_ids,
+            campaign_policy_summary=None,
             budget=budget_state,
-            resolved_contact_context=_bounded_optional(
-                snapshot.resolved_contact_context, 500
-            ),
-            conversation_strategy=snapshot.conversation_strategy,
-            prospect_intelligence=snapshot.prospect_intelligence,
+            resolved_contact_context=None,
+            conversation_strategy=lean.strategy,
+            prospect_intelligence=lean.prospect,
+            lean_context=lean_context,
         )
 
         try:

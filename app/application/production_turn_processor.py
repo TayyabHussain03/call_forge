@@ -7,7 +7,7 @@ from collections.abc import Callable
 from app.brain.authority.models import AuthorityPolicy
 from app.brain.budget.evaluator import TrustedExitSignals
 from app.brain.budget.models import BudgetPolicy
-from app.brain.contracts import BudgetState
+from app.brain.contracts import BudgetState, BusinessIntelligenceSnapshot
 from app.brain.orchestrator.orchestrator import (
     BrainOrchestrator,
     BrainSnapshotInput,
@@ -18,6 +18,13 @@ from app.brain.orchestrator.orchestrator import (
 from app.brain.scope.models import ScopePolicy
 from app.contracts.conversation_context import ConversationContext
 from app.conversation.guardrails.priority import TrustedPriorityOutcome
+from app.conversation.context.builder import LeanContextBuildInput, LeanContextBuilder
+from app.conversation.context.contracts import (
+    ApprovedEvidenceItem,
+    LeanTurnContext,
+    RecentTurn,
+    TurnSpeaker,
+)
 from app.conversation.prospect_intelligence.contracts import (
     ProspectEvidence,
     ProspectIntelligenceSnapshot,
@@ -111,6 +118,12 @@ class ProductionTurnProcessor(TurnProcessor):
         prospect_intelligence_updater: ProspectIntelligenceUpdater | None = None,
         prospect_evidence_provider: ProspectEvidenceProvider | None = None,
         strategy_buffer: StrategyBuffer | None = None,
+        lean_context_builder: LeanContextBuilder | None = None,
+        approved_evidence: tuple[ApprovedEvidenceItem, ...] = (),
+        business_intelligence: BusinessIntelligenceSnapshot | None = None,
+        relevant_business_fields: tuple[str, ...] = (),
+        campaign_goal: str | None = None,
+        discovery_priorities: tuple[str, ...] = (),
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -137,6 +150,13 @@ class ProductionTurnProcessor(TurnProcessor):
             raise ValueError("strategy buffer must belong to the processor call")
         self._latest_strategy: ConversationStrategy | None = None
         self._latest_strategy_source_sequence: int | None = None
+        self._context_builder = lean_context_builder or LeanContextBuilder()
+        self._approved_evidence = tuple(approved_evidence)
+        self._business_intelligence = business_intelligence
+        self._relevant_business_fields = tuple(relevant_business_fields)
+        self._campaign_goal = campaign_goal
+        self._discovery_priorities = tuple(discovery_priorities)
+        self._recent_turns: tuple[RecentTurn, ...] = ()
         self._turn_count = 0
         self._reasoning_calls = 0
 
@@ -184,19 +204,23 @@ class ProductionTurnProcessor(TurnProcessor):
             or self._latest_strategy_source_sequence != turn.sequence_number
         ):
             raise ValueError("supervisor input requires the latest completed normal turn")
+        extra_recent = tuple(
+            RecentTurn(f"provided-{index}", TurnSpeaker.USER, item[:300])
+            for index, item in enumerate(recent_context)
+            if item.strip()
+        )
+        lean = self._build_lean_context(
+            turn,
+            self._latest_strategy,
+            None,
+            recent_turns=(*self._recent_turns, *extra_recent),
+            campaign_goal=campaign_context_summary or self._campaign_goal,
+        )
         return SupervisorInput(
-            call_id=self._context.call_id,
-            turn_id=turn.turn_id,
-            source_turn_sequence=turn.sequence_number,
-            current_turn_excerpt=turn.utterance[:500],
-            current_state=self._orchestrator.current_state,
-            prospect_intelligence=self._prospect_intelligence,
-            conversation_strategy=self._latest_strategy,
-            recent_context=recent_context,
-            campaign_context_summary=campaign_context_summary,
-            interruption=turn.interruption,
-            conversation_category=turn.conversation_category,
-            addressee_status=turn.addressee_status,
+            self._context.call_id,
+            turn.turn_id,
+            turn.sequence_number,
+            self._context_builder.for_supervisor(lean),
         )
 
     def process_turn(self, turn: CoordinatedUserTurn) -> CoordinatedTurnOutput:
@@ -204,6 +228,7 @@ class ProductionTurnProcessor(TurnProcessor):
         priority = self._priority(turn)
         budget = self._budget_state()
         strategy = None
+        supervisor_insight = None
         if priority == TrustedPriorityOutcome.NONE:
             supervisor_insight = self._strategy_buffer.consume_for(
                 turn.sequence_number
@@ -235,6 +260,7 @@ class ProductionTurnProcessor(TurnProcessor):
                     ),
                 )
             )
+        lean_context = self._build_lean_context(turn, strategy, supervisor_insight)
         slice_two = self._orchestrator.process_turn(
             self._context,
             priority,
@@ -243,12 +269,7 @@ class ProductionTurnProcessor(TurnProcessor):
             TrustedExitSignals(),
             BrainSnapshotInput(
                 current_utterance=turn.utterance,
-                conversation_strategy=strategy,
-                prospect_intelligence=(
-                    self._prospect_intelligence.to_brain_summary()
-                    if strategy is not None
-                    else None
-                ),
+                lean_context=self._context_builder.for_brain(lean_context),
             ),
             self._scope_policy,
             self._authority_policy,
@@ -314,6 +335,11 @@ class ProductionTurnProcessor(TurnProcessor):
         if strategy is not None:
             self._latest_strategy = strategy
             self._latest_strategy_source_sequence = turn.sequence_number
+        self._recent_turns = (
+            *self._recent_turns,
+            RecentTurn(turn.turn_id, TurnSpeaker.USER, turn.utterance[:300]),
+            RecentTurn(turn.turn_id, TurnSpeaker.AGENT, rendered.text[:300]),
+        )[-8:]
         return CoordinatedTurnOutput(
             turn.turn_id,
             plan,
@@ -321,6 +347,45 @@ class ProductionTurnProcessor(TurnProcessor):
             unfinished,
             authoritative_result,
             terminal,
+        )
+
+    def _build_lean_context(
+        self,
+        turn: CoordinatedUserTurn,
+        strategy: ConversationStrategy | None,
+        supervisor_insight: SupervisorInsight | None,
+        *,
+        recent_turns: tuple[RecentTurn, ...] | None = None,
+        campaign_goal: str | None = None,
+    ) -> LeanTurnContext:
+        """Build a fresh canonical view from current typed state."""
+        return self._context_builder.build(
+            LeanContextBuildInput(
+                call_id=self._context.call_id,
+                current_turn_id=turn.turn_id,
+                current_turn_sequence=turn.sequence_number,
+                current_user_message=turn.utterance,
+                current_state=self._orchestrator.current_state,
+                conversation_context=self._context,
+                strategy=strategy,
+                recent_turns=(
+                    self._recent_turns if recent_turns is None else recent_turns
+                ),
+                prospect_intelligence=self._prospect_intelligence,
+                pending_intent=turn.interruption.previous_intent,
+                approved_evidence=self._approved_evidence,
+                authority_policy=self._authority_policy,
+                business_intelligence=self._business_intelligence,
+                relevant_business_fields=self._relevant_business_fields,
+                campaign_goal=(
+                    self._campaign_goal if campaign_goal is None else campaign_goal
+                ),
+                discovery_priorities=self._discovery_priorities,
+                interruption=turn.interruption,
+                conversation_category=turn.conversation_category,
+                addressee_status=turn.addressee_status,
+                supervisor_insight=supervisor_insight,
+            )
         )
 
     def _contact_understanding(
