@@ -22,6 +22,7 @@ from app.brain.business_intelligence import (
     UnknownSlot,
 )
 from app.contracts.contact_understanding import ContactUnderstanding
+from app.conversation.strategy.contracts import ConversationStrategy
 from app.core.constants import (
     AgentAction,
     CommercialRequestKind,
@@ -95,6 +96,8 @@ class BrainInput:
         budget: Remaining budgets.
         resolved_contact_context: Read-only resolved contact context from the
             contact pipeline, ya None (Brain consume karta hai, re-derive nahi).
+        conversation_strategy: Bounded deterministic conversation guidance. It
+            carries no action, transition, or execution authority.
     """
 
     current_utterance: str
@@ -108,6 +111,7 @@ class BrainInput:
     campaign_policy_summary: str | None = None
     budget: BudgetState | None = None
     resolved_contact_context: str | None = None
+    conversation_strategy: ConversationStrategy | None = None
 
 
 @dataclass(frozen=True)

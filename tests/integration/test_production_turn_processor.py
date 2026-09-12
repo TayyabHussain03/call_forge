@@ -7,7 +7,7 @@ from app.brain.authority.models import load_authority_policies
 from app.brain.authority.validator import AuthorityPolicyValidator
 from app.brain.budget.evaluator import BudgetPolicyEvaluator
 from app.brain.budget.models import load_budget_policies
-from app.brain.contracts import BrainProposal, CommercialRequest
+from app.brain.contracts import BrainInput, BrainProposal, CommercialRequest
 from app.brain.orchestrator.orchestrator import BrainOrchestrator
 from app.brain.scope.models import load_scope_policies
 from app.brain.scope.validator import ScopePolicyValidator
@@ -36,6 +36,7 @@ from app.conversation.response_rendering.renderer import (
     DeterministicResponseRenderer,
     ResponseRenderer,
 )
+from app.conversation.strategy.contracts import ConversationMode, SalesStage
 from app.conversation.state_machine.machine import ConversationStateMachine
 from app.conversation.state_machine.states import load_config
 from app.core.constants import (
@@ -58,6 +59,16 @@ from app.runtime.contracts import (
 )
 from app.runtime.turn_coordinator import TurnCoordinator
 from app.services.service_offering_service import ServiceOfferingService
+
+
+class CapturingReasoningProvider(MockReasoningProvider):
+    def __init__(self, proposal: BrainProposal) -> None:
+        super().__init__(default=proposal)
+        self.last_input: BrainInput | None = None
+
+    def reason(self, brain_input: BrainInput) -> BrainProposal:
+        self.last_input = brain_input
+        return super().reason(brain_input)
 
 
 def _proposal(
@@ -149,6 +160,19 @@ def test_normal_runtime_turn_composes_full_existing_pipeline_once() -> None:
     assert provider.call_count == 1
     assert coordinator.state.active_delivery is not None
     assert coordinator.state.active_delivery.rendered_response.text
+
+
+def test_runtime_supplies_typed_strategy_guidance_to_brain() -> None:
+    provider = CapturingReasoningProvider(_proposal())
+    TurnCoordinator("call", _processor(provider)).handle(
+        _final(conversation_category=InterruptionCategory.QUESTION)
+    )
+
+    assert provider.last_input is not None
+    strategy = provider.last_input.conversation_strategy
+    assert strategy is not None
+    assert strategy.sales_stage == SalesStage.OPENING
+    assert strategy.conversation_mode == ConversationMode.QUESTION_DETOUR
 
 
 def test_trusted_dnc_and_not_interested_are_distinct_and_skip_brain() -> None:

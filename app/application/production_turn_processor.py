@@ -32,6 +32,11 @@ from app.conversation.response_rendering.contracts import (
     TrustedRenderingContext,
 )
 from app.conversation.response_rendering.renderer import ResponseRenderer
+from app.conversation.strategy.contracts import (
+    ConversationStrategyInput,
+    SalesStage,
+)
+from app.conversation.strategy.engine import ConversationStrategyEngine
 from app.core.constants import AgentAction, ConversationState
 from app.llm.providers.contact_understanding_provider import (
     ContactUnderstandingError,
@@ -48,6 +53,10 @@ TrustedPriorityProvider = Callable[[CoordinatedUserTurn], TrustedPriorityOutcome
 RenderingContextProvider = Callable[
     [CoordinatedUserTurn, AuthoritativeResultKind, ConversationContext],
     TrustedRenderingContext,
+]
+StrategyInputProvider = Callable[
+    [CoordinatedUserTurn, ConversationContext, SalesStage, ConversationState],
+    ConversationStrategyInput,
 ]
 
 
@@ -73,6 +82,8 @@ class ProductionTurnProcessor(TurnProcessor):
         trusted_priority_provider: TrustedPriorityProvider | None = None,
         contact_understanding_provider: ContactUnderstandingProvider | None = None,
         rendering_context_provider: RenderingContextProvider | None = None,
+        strategy_engine: ConversationStrategyEngine | None = None,
+        strategy_input_provider: StrategyInputProvider | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -84,6 +95,9 @@ class ProductionTurnProcessor(TurnProcessor):
         self._priority = trusted_priority_provider or _no_priority
         self._contact = contact_understanding_provider
         self._rendering_context = rendering_context_provider
+        self._strategy_engine = strategy_engine or ConversationStrategyEngine()
+        self._strategy_input = strategy_input_provider or _default_strategy_input
+        self._sales_stage = SalesStage.OPENING
         self._turn_count = 0
         self._reasoning_calls = 0
 
@@ -97,20 +111,40 @@ class ProductionTurnProcessor(TurnProcessor):
         """Return the authoritative state without exposing engine internals."""
         return self._orchestrator.current_state
 
+    @property
+    def sales_stage(self) -> SalesStage:
+        """Return advisory sales progression, separate from authoritative state."""
+        return self._sales_stage
+
     def process_turn(self, turn: CoordinatedUserTurn) -> CoordinatedTurnOutput:
         """Run each existing layer once, in its established authority order."""
         priority = self._priority(turn)
         budget = self._budget_state()
+        strategy = None
+        if priority == TrustedPriorityOutcome.NONE:
+            strategy = self._strategy_engine.recommend(
+                self._strategy_input(
+                    turn,
+                    self._context,
+                    self._sales_stage,
+                    self._orchestrator.current_state,
+                )
+            )
         slice_two = self._orchestrator.process_turn(
             self._context,
             priority,
             budget,
             self._budget_policy,
             TrustedExitSignals(),
-            BrainSnapshotInput(current_utterance=turn.utterance),
+            BrainSnapshotInput(
+                current_utterance=turn.utterance,
+                conversation_strategy=strategy,
+            ),
             self._scope_policy,
             self._authority_policy,
         )
+        if strategy is not None:
+            self._sales_stage = strategy.sales_stage
         self._turn_count += 1
         if slice_two.trace.provider_name is not None:
             self._reasoning_calls += 1
@@ -232,6 +266,26 @@ class ProductionTurnProcessor(TurnProcessor):
 
 def _no_priority(turn: CoordinatedUserTurn) -> TrustedPriorityOutcome:
     return TrustedPriorityOutcome.NONE
+
+
+def _default_strategy_input(
+    turn: CoordinatedUserTurn,
+    context: ConversationContext,
+    current_stage: SalesStage,
+    current_state: ConversationState,
+) -> ConversationStrategyInput:
+    """Map existing typed metadata only; never classify the raw utterance here."""
+    return ConversationStrategyInput(
+        current_stage=current_stage,
+        current_state=current_state,
+        campaign_context_label=context.campaign_id,
+        objection_present=turn.conversation_category == InterruptionCategory.OBJECTION,
+        question_present=turn.conversation_category == InterruptionCategory.QUESTION,
+        clarification_needed=(
+            turn.conversation_category == InterruptionCategory.CLARIFICATION
+        ),
+        interruption=turn.interruption,
+    )
 
 
 def _result_kind(slice_two, slice_three) -> AuthoritativeResultKind:
