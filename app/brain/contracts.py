@@ -22,6 +22,7 @@ from app.brain.business_intelligence import (
     UnknownSlot,
 )
 from app.contracts.contact_understanding import ContactUnderstanding
+from app.conversation.prospect_intelligence.contracts import ProspectIntelligenceSummary
 from app.conversation.strategy.contracts import ConversationStrategy
 from app.core.constants import (
     AgentAction,
@@ -98,6 +99,8 @@ class BrainInput:
             contact pipeline, ya None (Brain consume karta hai, re-derive nahi).
         conversation_strategy: Bounded deterministic conversation guidance. It
             carries no action, transition, or execution authority.
+        prospect_intelligence: Bounded current person summary with observed and
+            inferred values kept structurally distinct.
     """
 
     current_utterance: str
@@ -112,6 +115,7 @@ class BrainInput:
     budget: BudgetState | None = None
     resolved_contact_context: str | None = None
     conversation_strategy: ConversationStrategy | None = None
+    prospect_intelligence: ProspectIntelligenceSummary | None = None
 
 
 @dataclass(frozen=True)

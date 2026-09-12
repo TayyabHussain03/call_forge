@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from app.conversation.prospect_intelligence.contracts import ProspectIntelligenceSnapshot
 from app.conversation.response_planning.contracts import InterruptionContext
 from app.core.constants import ConversationState
 
@@ -27,6 +28,7 @@ class ConversationMode(str, Enum):
     OBJECTION = "objection"
     BUSY = "busy"
     CLARIFICATION = "clarification"
+    ROLE_ROUTING = "role_routing"
 
 
 class StrategyType(str, Enum):
@@ -42,11 +44,14 @@ class StrategyType(str, Enum):
     ASK_MICRO_COMMITMENT = "ask_micro_commitment"
     PROPOSE_NEXT_STEP = "propose_next_step"
     CLARIFY = "clarify"
+    ROUTE_TO_DECISION_MAKER = "route_to_decision_maker"
+    DISCOVER_BUSINESS_IMPACT = "discover_business_impact"
 
 
 class InformationGap(str, Enum):
     """Typed fact the strategy has not yet received as structured input."""
 
+    ROLE = "role"
     CURRENT_WORKFLOW = "current_workflow"
     PAIN_POINT = "pain_point"
     CURRENT_SOLUTION = "current_solution"
@@ -87,6 +92,7 @@ class ConversationStrategyInput:
     explicit_next_step: MicroCommitment | None = None
     interruption: InterruptionContext = InterruptionContext()
     campaign_context_label: str | None = None
+    prospect_intelligence: ProspectIntelligenceSnapshot | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.current_stage, SalesStage):
@@ -103,6 +109,10 @@ class ConversationStrategyInput:
             raise TypeError("explicit_next_step must be a MicroCommitment")
         if not isinstance(self.interruption, InterruptionContext):
             raise TypeError("interruption must be an InterruptionContext")
+        if self.prospect_intelligence is not None and not isinstance(
+            self.prospect_intelligence, ProspectIntelligenceSnapshot
+        ):
+            raise TypeError("prospect_intelligence must be a ProspectIntelligenceSnapshot")
         if self.campaign_goal is not None and len(self.campaign_goal) > 200:
             raise ValueError("campaign goal exceeds bounded length")
         if self.campaign_context_label is not None and len(

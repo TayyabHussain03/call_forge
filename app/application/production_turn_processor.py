@@ -18,6 +18,11 @@ from app.brain.orchestrator.orchestrator import (
 from app.brain.scope.models import ScopePolicy
 from app.contracts.conversation_context import ConversationContext
 from app.conversation.guardrails.priority import TrustedPriorityOutcome
+from app.conversation.prospect_intelligence.contracts import (
+    ProspectEvidence,
+    ProspectIntelligenceSnapshot,
+)
+from app.conversation.prospect_intelligence.updater import ProspectIntelligenceUpdater
 from app.conversation.response_planning.contracts import (
     AuthoritativeResultKind,
     ExplanationNeed,
@@ -55,8 +60,17 @@ RenderingContextProvider = Callable[
     TrustedRenderingContext,
 ]
 StrategyInputProvider = Callable[
-    [CoordinatedUserTurn, ConversationContext, SalesStage, ConversationState],
+    [
+        CoordinatedUserTurn,
+        ConversationContext,
+        SalesStage,
+        ConversationState,
+        ProspectIntelligenceSnapshot,
+    ],
     ConversationStrategyInput,
+]
+ProspectEvidenceProvider = Callable[
+    [CoordinatedUserTurn, ProspectIntelligenceSnapshot], ProspectEvidence | None
 ]
 
 
@@ -84,6 +98,9 @@ class ProductionTurnProcessor(TurnProcessor):
         rendering_context_provider: RenderingContextProvider | None = None,
         strategy_engine: ConversationStrategyEngine | None = None,
         strategy_input_provider: StrategyInputProvider | None = None,
+        initial_prospect_intelligence: ProspectIntelligenceSnapshot | None = None,
+        prospect_intelligence_updater: ProspectIntelligenceUpdater | None = None,
+        prospect_evidence_provider: ProspectEvidenceProvider | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -98,6 +115,13 @@ class ProductionTurnProcessor(TurnProcessor):
         self._strategy_engine = strategy_engine or ConversationStrategyEngine()
         self._strategy_input = strategy_input_provider or _default_strategy_input
         self._sales_stage = SalesStage.OPENING
+        self._prospect_intelligence = (
+            initial_prospect_intelligence or ProspectIntelligenceSnapshot()
+        )
+        self._prospect_updater = (
+            prospect_intelligence_updater or ProspectIntelligenceUpdater()
+        )
+        self._prospect_evidence = prospect_evidence_provider or _no_prospect_evidence
         self._turn_count = 0
         self._reasoning_calls = 0
 
@@ -116,18 +140,29 @@ class ProductionTurnProcessor(TurnProcessor):
         """Return advisory sales progression, separate from authoritative state."""
         return self._sales_stage
 
+    @property
+    def prospect_intelligence(self) -> ProspectIntelligenceSnapshot:
+        """Return the current immutable, call-scoped person snapshot."""
+        return self._prospect_intelligence
+
     def process_turn(self, turn: CoordinatedUserTurn) -> CoordinatedTurnOutput:
         """Run each existing layer once, in its established authority order."""
         priority = self._priority(turn)
         budget = self._budget_state()
         strategy = None
         if priority == TrustedPriorityOutcome.NONE:
+            evidence = self._prospect_evidence(turn, self._prospect_intelligence)
+            if evidence is not None:
+                self._prospect_intelligence = self._prospect_updater.update(
+                    self._prospect_intelligence, evidence
+                )
             strategy = self._strategy_engine.recommend(
                 self._strategy_input(
                     turn,
                     self._context,
                     self._sales_stage,
                     self._orchestrator.current_state,
+                    self._prospect_intelligence,
                 )
             )
         slice_two = self._orchestrator.process_turn(
@@ -139,6 +174,11 @@ class ProductionTurnProcessor(TurnProcessor):
             BrainSnapshotInput(
                 current_utterance=turn.utterance,
                 conversation_strategy=strategy,
+                prospect_intelligence=(
+                    self._prospect_intelligence.to_brain_summary()
+                    if strategy is not None
+                    else None
+                ),
             ),
             self._scope_policy,
             self._authority_policy,
@@ -273,6 +313,7 @@ def _default_strategy_input(
     context: ConversationContext,
     current_stage: SalesStage,
     current_state: ConversationState,
+    prospect_intelligence: ProspectIntelligenceSnapshot,
 ) -> ConversationStrategyInput:
     """Map existing typed metadata only; never classify the raw utterance here."""
     return ConversationStrategyInput(
@@ -285,7 +326,15 @@ def _default_strategy_input(
             turn.conversation_category == InterruptionCategory.CLARIFICATION
         ),
         interruption=turn.interruption,
+        prospect_intelligence=prospect_intelligence,
     )
+
+
+def _no_prospect_evidence(
+    turn: CoordinatedUserTurn,
+    previous: ProspectIntelligenceSnapshot,
+) -> ProspectEvidence | None:
+    return None
 
 
 def _result_kind(slice_two, slice_three) -> AuthoritativeResultKind:

@@ -55,6 +55,7 @@ from app.conversation.guardrails.priority import (
     TrustedPriorityOutcome,
     resolve_priority_action,
 )
+from app.conversation.prospect_intelligence.contracts import ProspectIntelligenceSummary
 from app.conversation.strategy.contracts import ConversationStrategy
 from app.core.constants import (
     AgentAction,
@@ -129,6 +130,7 @@ class BrainSnapshotInput:
     campaign_policy_summary: str | None = None
     resolved_contact_context: str | None = None
     conversation_strategy: ConversationStrategy | None = None
+    prospect_intelligence: ProspectIntelligenceSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -438,6 +440,7 @@ class BrainOrchestrator:
                 snapshot.resolved_contact_context, 500
             ),
             conversation_strategy=snapshot.conversation_strategy,
+            prospect_intelligence=snapshot.prospect_intelligence,
         )
 
         try:

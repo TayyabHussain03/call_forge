@@ -26,6 +26,14 @@ from app.conversation.guardrails.action_validator import ActionValidator
 from app.conversation.guardrails.clarification import ClarificationEngine
 from app.conversation.guardrails.fallbacks import FallbackEngine
 from app.conversation.guardrails.priority import TrustedPriorityOutcome
+from app.conversation.prospect_intelligence.contracts import (
+    DecisionAuthority,
+    InferenceCandidate,
+    InferredProspectEvidence,
+    ObservedProspectEvidence,
+    ProspectEvidence,
+    ProspectRole,
+)
 from app.conversation.response_planning.contracts import (
     AddresseeStatus,
     AuthoritativeResultKind,
@@ -36,7 +44,7 @@ from app.conversation.response_rendering.renderer import (
     DeterministicResponseRenderer,
     ResponseRenderer,
 )
-from app.conversation.strategy.contracts import ConversationMode, SalesStage
+from app.conversation.strategy.contracts import ConversationMode, SalesStage, StrategyType
 from app.conversation.state_machine.machine import ConversationStateMachine
 from app.conversation.state_machine.states import load_config
 from app.core.constants import (
@@ -94,6 +102,7 @@ def _processor(
     renderer: ResponseRenderer | None = None,
     with_offering: bool = False,
     scope_validator: ScopePolicyValidator | None = None,
+    prospect_evidence_provider=None,  # type: ignore[no-untyped-def]
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -132,6 +141,7 @@ def _processor(
         authority_policy=load_authority_policies("app/config/authority_policy.yaml")["standard"],
         trusted_priority_provider=lambda _: priority,
         contact_understanding_provider=contact_provider,
+        prospect_evidence_provider=prospect_evidence_provider,
     )
 
 
@@ -173,6 +183,59 @@ def test_runtime_supplies_typed_strategy_guidance_to_brain() -> None:
     assert strategy is not None
     assert strategy.sales_stage == SalesStage.OPENING
     assert strategy.conversation_mode == ConversationMode.QUESTION_DETOUR
+
+
+def test_runtime_updates_prospect_snapshot_before_strategy_and_bounded_brain_input() -> None:
+    provider = CapturingReasoningProvider(_proposal())
+
+    def evidence(turn, previous):  # type: ignore[no-untyped-def]
+        return ProspectEvidence(
+            observed=ObservedProspectEvidence(
+                turn.turn_id, explicit_role=ProspectRole.RECEPTIONIST
+            )
+        )
+
+    processor = _processor(provider, prospect_evidence_provider=evidence)
+    TurnCoordinator("call", processor).handle(_final())
+
+    assert processor.prospect_intelligence.observed.explicit_role is not None
+    assert provider.last_input is not None
+    assert provider.last_input.prospect_intelligence is not None
+    assert provider.last_input.prospect_intelligence.explicit_role is not None
+    strategy = provider.last_input.conversation_strategy
+    assert strategy is not None
+    assert strategy.strategy_type == StrategyType.ROUTE_TO_DECISION_MAKER
+
+
+def test_high_confidence_prospect_inference_cannot_override_commercial_authority() -> None:
+    provider = CapturingReasoningProvider(
+        _proposal(
+            topic=TopicCategory.COMMERCIAL_REQUEST,
+            commercial=CommercialRequest(CommercialRequestKind.GUARANTEE),
+        )
+    )
+
+    def evidence(turn, previous):  # type: ignore[no-untyped-def]
+        return ProspectEvidence(
+            inferred=InferredProspectEvidence(
+                turn.turn_id,
+                decision_authority=InferenceCandidate(
+                    DecisionAuthority.FINAL, 1.0
+                ),
+            )
+        )
+
+    processor = _processor(provider, prospect_evidence_provider=evidence)
+    result = TurnCoordinator("call", processor).handle(_final())
+
+    assert provider.last_input is not None
+    summary = provider.last_input.prospect_intelligence
+    assert summary is not None
+    assert summary.inferred_decision_authority is not None
+    assert summary.explicit_decision_authority is None
+    assert result.turn_output is not None
+    assert result.turn_output.pipeline_outcome == AuthoritativeResultKind.REDIRECT
+    assert processor.current_state == ConversationState.NEW_CALL
 
 
 def test_trusted_dnc_and_not_interested_are_distinct_and_skip_brain() -> None:
