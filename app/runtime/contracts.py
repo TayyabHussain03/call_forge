@@ -98,10 +98,15 @@ class CoordinatedUserTurn:
     """Finalized logical user turn passed once to the authoritative pipeline."""
 
     turn_id: str
+    sequence_number: int
     utterance: str
     interruption: InterruptionContext
     addressee_status: AddresseeStatus
     conversation_category: InterruptionCategory
+
+    def __post_init__(self) -> None:
+        if not self.turn_id or self.sequence_number < 0:
+            raise ValueError("coordinated turn requires identity and non-negative sequence")
 
 
 @dataclass(frozen=True)

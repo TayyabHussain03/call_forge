@@ -75,6 +75,20 @@ class MicroCommitment(str, Enum):
 
 
 @dataclass(frozen=True)
+class ConversationStrategyHint:
+    """Bounded supervisor suggestion that carries no strategy or action authority."""
+
+    strategy_type: StrategyType
+    confidence: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.strategy_type, StrategyType):
+            raise TypeError("strategy hint type must be StrategyType")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("strategy hint confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True)
 class ConversationStrategyInput:
     """Structured facts/advisory signals; raw utterance is deliberately absent."""
 
@@ -93,6 +107,7 @@ class ConversationStrategyInput:
     interruption: InterruptionContext = InterruptionContext()
     campaign_context_label: str | None = None
     prospect_intelligence: ProspectIntelligenceSnapshot | None = None
+    strategy_hint: ConversationStrategyHint | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.current_stage, SalesStage):
@@ -113,6 +128,10 @@ class ConversationStrategyInput:
             self.prospect_intelligence, ProspectIntelligenceSnapshot
         ):
             raise TypeError("prospect_intelligence must be a ProspectIntelligenceSnapshot")
+        if self.strategy_hint is not None and not isinstance(
+            self.strategy_hint, ConversationStrategyHint
+        ):
+            raise TypeError("strategy_hint must be a ConversationStrategyHint")
         if self.campaign_goal is not None and len(self.campaign_goal) > 200:
             raise ValueError("campaign goal exceeds bounded length")
         if self.campaign_context_label is not None and len(

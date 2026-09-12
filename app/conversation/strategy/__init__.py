@@ -3,6 +3,7 @@
 from app.conversation.strategy.contracts import (
     ConversationMode,
     ConversationStrategy,
+    ConversationStrategyHint,
     ConversationStrategyInput,
     InformationGap,
     MicroCommitment,
@@ -15,6 +16,7 @@ __all__ = [
     "ConversationMode",
     "ConversationStrategy",
     "ConversationStrategyEngine",
+    "ConversationStrategyHint",
     "ConversationStrategyInput",
     "InformationGap",
     "MicroCommitment",

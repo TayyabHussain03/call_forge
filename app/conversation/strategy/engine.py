@@ -192,6 +192,18 @@ class ConversationStrategyEngine:
                     gaps,
                 )
             if role in {ProspectRole.MANAGER, ProspectRole.ASSISTANT_MANAGER}:
+                if (
+                    strategy_input.strategy_hint is not None
+                    and strategy_input.strategy_hint.strategy_type
+                    == StrategyType.DISCOVER_BUSINESS_IMPACT
+                ):
+                    return _strategy(
+                        SalesStage.DISCOVERY,
+                        ConversationMode.NORMAL,
+                        "understand operational business impact and the current workflow",
+                        StrategyType.DISCOVER_BUSINESS_IMPACT,
+                        gaps,
+                    )
                 return _strategy(
                     SalesStage.DISCOVERY,
                     ConversationMode.NORMAL,

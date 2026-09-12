@@ -141,6 +141,7 @@ class TurnCoordinator:
         )
         turn = CoordinatedUserTurn(
             event.turn_id,
+            event.sequence_number,
             event.utterance,
             interruption,
             addressee_status,

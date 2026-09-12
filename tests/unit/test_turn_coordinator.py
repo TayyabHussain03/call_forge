@@ -107,6 +107,7 @@ def test_normal_turn_delivery_lifecycle() -> None:
     result = coordinator.handle(_final(1))
     assert result.outcome == CoordinationOutcome.TURN_PROCESSED
     assert result.instructions[0].action == DeliveryAction.SPEAK
+    assert processor.turns[0].sequence_number == 1
     assert coordinator.state.active_delivery is not None
     assert coordinator.state.active_delivery.status == DeliveryStatus.PENDING
 

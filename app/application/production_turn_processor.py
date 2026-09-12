@@ -38,10 +38,18 @@ from app.conversation.response_rendering.contracts import (
 )
 from app.conversation.response_rendering.renderer import ResponseRenderer
 from app.conversation.strategy.contracts import (
+    ConversationStrategy,
+    ConversationStrategyHint,
     ConversationStrategyInput,
     SalesStage,
 )
 from app.conversation.strategy.engine import ConversationStrategyEngine
+from app.conversation.supervisor.buffer import (
+    BufferWriteOutcome,
+    StrategyBuffer,
+    StrategyBufferSnapshot,
+)
+from app.conversation.supervisor.contracts import SupervisorInput, SupervisorInsight
 from app.core.constants import AgentAction, ConversationState
 from app.llm.providers.contact_understanding_provider import (
     ContactUnderstandingError,
@@ -66,6 +74,7 @@ StrategyInputProvider = Callable[
         SalesStage,
         ConversationState,
         ProspectIntelligenceSnapshot,
+        ConversationStrategyHint | None,
     ],
     ConversationStrategyInput,
 ]
@@ -101,6 +110,7 @@ class ProductionTurnProcessor(TurnProcessor):
         initial_prospect_intelligence: ProspectIntelligenceSnapshot | None = None,
         prospect_intelligence_updater: ProspectIntelligenceUpdater | None = None,
         prospect_evidence_provider: ProspectEvidenceProvider | None = None,
+        strategy_buffer: StrategyBuffer | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -122,6 +132,11 @@ class ProductionTurnProcessor(TurnProcessor):
             prospect_intelligence_updater or ProspectIntelligenceUpdater()
         )
         self._prospect_evidence = prospect_evidence_provider or _no_prospect_evidence
+        self._strategy_buffer = strategy_buffer or StrategyBuffer(initial_context.call_id)
+        if self._strategy_buffer.call_id != initial_context.call_id:
+            raise ValueError("strategy buffer must belong to the processor call")
+        self._latest_strategy: ConversationStrategy | None = None
+        self._latest_strategy_source_sequence: int | None = None
         self._turn_count = 0
         self._reasoning_calls = 0
 
@@ -145,12 +160,62 @@ class ProductionTurnProcessor(TurnProcessor):
         """Return the current immutable, call-scoped person snapshot."""
         return self._prospect_intelligence
 
+    @property
+    def strategy_buffer(self) -> StrategyBufferSnapshot:
+        """Return an immutable advisory-buffer snapshot."""
+        return self._strategy_buffer.snapshot()
+
+    def record_supervisor_result(
+        self, insight: SupervisorInsight
+    ) -> BufferWriteOutcome:
+        """Record an externally completed advisory result without executing it."""
+        return self._strategy_buffer.record(insight)
+
+    def build_supervisor_input(
+        self,
+        turn: CoordinatedUserTurn,
+        *,
+        recent_context: tuple[str, ...] = (),
+        campaign_context_summary: str | None = None,
+    ) -> SupervisorInput:
+        """Build bounded input for optional analysis after this turn completes."""
+        if (
+            self._latest_strategy is None
+            or self._latest_strategy_source_sequence != turn.sequence_number
+        ):
+            raise ValueError("supervisor input requires the latest completed normal turn")
+        return SupervisorInput(
+            call_id=self._context.call_id,
+            turn_id=turn.turn_id,
+            source_turn_sequence=turn.sequence_number,
+            current_turn_excerpt=turn.utterance[:500],
+            current_state=self._orchestrator.current_state,
+            prospect_intelligence=self._prospect_intelligence,
+            conversation_strategy=self._latest_strategy,
+            recent_context=recent_context,
+            campaign_context_summary=campaign_context_summary,
+            interruption=turn.interruption,
+            conversation_category=turn.conversation_category,
+            addressee_status=turn.addressee_status,
+        )
+
     def process_turn(self, turn: CoordinatedUserTurn) -> CoordinatedTurnOutput:
         """Run each existing layer once, in its established authority order."""
         priority = self._priority(turn)
         budget = self._budget_state()
         strategy = None
         if priority == TrustedPriorityOutcome.NONE:
+            supervisor_insight = self._strategy_buffer.consume_for(
+                turn.sequence_number
+            )
+            if (
+                supervisor_insight is not None
+                and supervisor_insight.prospect_evidence is not None
+            ):
+                self._prospect_intelligence = self._prospect_updater.update(
+                    self._prospect_intelligence,
+                    supervisor_insight.prospect_evidence,
+                )
             evidence = self._prospect_evidence(turn, self._prospect_intelligence)
             if evidence is not None:
                 self._prospect_intelligence = self._prospect_updater.update(
@@ -163,6 +228,11 @@ class ProductionTurnProcessor(TurnProcessor):
                     self._sales_stage,
                     self._orchestrator.current_state,
                     self._prospect_intelligence,
+                    (
+                        supervisor_insight.recommended_strategy_hint
+                        if supervisor_insight is not None
+                        else None
+                    ),
                 )
             )
         slice_two = self._orchestrator.process_turn(
@@ -241,6 +311,9 @@ class ProductionTurnProcessor(TurnProcessor):
             if plan.pending_intent is not None
             else rendering_context.primary_fact
         )
+        if strategy is not None:
+            self._latest_strategy = strategy
+            self._latest_strategy_source_sequence = turn.sequence_number
         return CoordinatedTurnOutput(
             turn.turn_id,
             plan,
@@ -314,6 +387,7 @@ def _default_strategy_input(
     current_stage: SalesStage,
     current_state: ConversationState,
     prospect_intelligence: ProspectIntelligenceSnapshot,
+    strategy_hint: ConversationStrategyHint | None,
 ) -> ConversationStrategyInput:
     """Map existing typed metadata only; never classify the raw utterance here."""
     return ConversationStrategyInput(
@@ -327,6 +401,7 @@ def _default_strategy_input(
         ),
         interruption=turn.interruption,
         prospect_intelligence=prospect_intelligence,
+        strategy_hint=strategy_hint,
     )
 
 

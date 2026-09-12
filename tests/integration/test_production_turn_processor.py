@@ -30,8 +30,10 @@ from app.conversation.prospect_intelligence.contracts import (
     DecisionAuthority,
     InferenceCandidate,
     InferredProspectEvidence,
+    InformationLevel,
     ObservedProspectEvidence,
     ProspectEvidence,
+    ProspectIntelligenceSnapshot,
     ProspectRole,
 )
 from app.conversation.response_planning.contracts import (
@@ -44,7 +46,20 @@ from app.conversation.response_rendering.renderer import (
     DeterministicResponseRenderer,
     ResponseRenderer,
 )
-from app.conversation.strategy.contracts import ConversationMode, SalesStage, StrategyType
+from app.conversation.strategy.contracts import (
+    ConversationMode,
+    ConversationStrategyInput,
+    SalesStage,
+    StrategyType,
+)
+from app.conversation.strategy.engine import ConversationStrategyEngine
+from app.conversation.supervisor.buffer import BufferWriteOutcome, StrategyBuffer
+from app.conversation.supervisor.contracts import SupervisorInput, SupervisorInsight
+from app.conversation.supervisor.coordinator import (
+    SupervisorCoordinator,
+    SupervisorRunOutcome,
+)
+from app.conversation.supervisor.provider import MockSupervisorProvider
 from app.conversation.state_machine.machine import ConversationStateMachine
 from app.conversation.state_machine.states import load_config
 from app.core.constants import (
@@ -103,6 +118,7 @@ def _processor(
     with_offering: bool = False,
     scope_validator: ScopePolicyValidator | None = None,
     prospect_evidence_provider=None,  # type: ignore[no-untyped-def]
+    strategy_buffer: StrategyBuffer | None = None,
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -142,6 +158,7 @@ def _processor(
         trusted_priority_provider=lambda _: priority,
         contact_understanding_provider=contact_provider,
         prospect_evidence_provider=prospect_evidence_provider,
+        strategy_buffer=strategy_buffer,
     )
 
 
@@ -233,6 +250,184 @@ def test_high_confidence_prospect_inference_cannot_override_commercial_authority
     assert summary is not None
     assert summary.inferred_decision_authority is not None
     assert summary.explicit_decision_authority is None
+    assert result.turn_output is not None
+    assert result.turn_output.pipeline_outcome == AuthoritativeResultKind.REDIRECT
+    assert processor.current_state == ConversationState.NEW_CALL
+
+
+def test_supervisor_enriches_a_later_turn_without_selecting_its_action() -> None:
+    buffer = StrategyBuffer("call")
+    provider = CapturingReasoningProvider(
+        _proposal(AgentAction.ANSWER_QUESTION, TopicCategory.BUSINESS_QUESTION)
+    )
+    processor = _processor(
+        provider,
+        initial_state=ConversationState.LISTEN,
+        strategy_buffer=buffer,
+    )
+    coordinator = TurnCoordinator("call", processor)
+    first = coordinator.handle(_final(1, "turn-1"))
+    assert first.processed_turn is not None
+    supervisor_input = processor.build_supervisor_input(first.processed_turn)
+    insight = SupervisorInsight(
+        "call",
+        "turn-1",
+        1,
+        ProspectEvidence(
+            inferred=InferredProspectEvidence(
+                "turn-1",
+                likely_role=InferenceCandidate(ProspectRole.MANAGER, 0.8),
+                influence_level=InferenceCandidate(InformationLevel.HIGH, 0.7),
+            )
+        ),
+    )
+    run = SupervisorCoordinator(
+        MockSupervisorProvider(default=insight), buffer
+    ).analyze(supervisor_input)
+
+    second = coordinator.handle(_final(2, "turn-2"))
+
+    assert run.outcome == SupervisorRunOutcome.STORED
+    assert second.turn_output is not None
+    assert processor.prospect_intelligence.inferred.likely_role is not None
+    assert processor.prospect_intelligence.observed.explicit_role is None
+    assert provider.last_input is not None
+    strategy = provider.last_input.conversation_strategy
+    assert strategy is not None
+    assert "operational impact" in strategy.communication_goal
+    assert second.turn_output.pipeline_outcome == AuthoritativeResultKind.EXECUTED
+
+
+def test_late_supervisor_result_cannot_replace_newer_buffer_version() -> None:
+    buffer = StrategyBuffer("call")
+    newer = SupervisorInsight(
+        "call",
+        "turn-6",
+        6,
+        ProspectEvidence(
+            inferred=InferredProspectEvidence(
+                "turn-6",
+                likely_role=InferenceCandidate(ProspectRole.MANAGER, 0.8),
+            )
+        ),
+    )
+    older = SupervisorInsight(
+        "call",
+        "turn-5",
+        5,
+        ProspectEvidence(
+            inferred=InferredProspectEvidence(
+                "turn-5",
+                likely_role=InferenceCandidate(ProspectRole.OWNER, 0.8),
+            )
+        ),
+    )
+
+    assert buffer.record(newer) == BufferWriteOutcome.ACCEPTED
+    assert buffer.record(older) == BufferWriteOutcome.STALE_REJECTED
+    assert buffer.latest() == newer
+
+
+def test_current_explicit_role_beats_consumed_supervisor_role() -> None:
+    buffer = StrategyBuffer("call")
+    buffer.record(
+        SupervisorInsight(
+            "call",
+            "turn-1",
+            1,
+            ProspectEvidence(
+                inferred=InferredProspectEvidence(
+                    "turn-1",
+                    likely_role=InferenceCandidate(ProspectRole.OWNER, 0.95),
+                )
+            ),
+        )
+    )
+
+    def evidence(turn, previous):  # type: ignore[no-untyped-def]
+        return ProspectEvidence(
+            observed=ObservedProspectEvidence(
+                turn.turn_id, explicit_role=ProspectRole.RECEPTIONIST
+            )
+        )
+
+    provider = CapturingReasoningProvider(_proposal())
+    processor = _processor(
+        provider,
+        strategy_buffer=buffer,
+        prospect_evidence_provider=evidence,
+    )
+    TurnCoordinator("call", processor).handle(_final(2, "turn-2"))
+
+    role = processor.prospect_intelligence.observed.explicit_role
+    assert role is not None and role.value == ProspectRole.RECEPTIONIST
+    assert processor.prospect_intelligence.inferred.likely_role is None
+    assert provider.last_input is not None
+    assert provider.last_input.conversation_strategy is not None
+    assert (
+        provider.last_input.conversation_strategy.strategy_type
+        == StrategyType.ROUTE_TO_DECISION_MAKER
+    )
+
+
+def test_supervisor_failure_does_not_trigger_fast_path_fallback() -> None:
+    buffer = StrategyBuffer("call")
+    run = SupervisorCoordinator(
+        MockSupervisorProvider(should_fail=True), buffer
+    ).analyze(
+        SupervisorInput(
+            "call",
+            "turn-1",
+            1,
+            "bounded summary",
+            ConversationState.NEW_CALL,
+            ProspectIntelligenceSnapshot(),
+            ConversationStrategyEngine().recommend(
+                ConversationStrategyInput(
+                    SalesStage.OPENING,
+                    ConversationState.NEW_CALL,
+                )
+            ),
+        )
+    )
+    provider = CapturingReasoningProvider(_proposal())
+    processor = _processor(provider, strategy_buffer=buffer)
+    result = TurnCoordinator("call", processor).handle(_final(2, "turn-2"))
+
+    assert run.outcome == SupervisorRunOutcome.FAILED
+    assert buffer.latest() is None
+    assert result.turn_output is not None
+    assert result.turn_output.pipeline_outcome == AuthoritativeResultKind.EXECUTED
+    assert processor.current_state == ConversationState.GREETING
+
+
+def test_supervisor_final_authority_inference_cannot_authorize_guarantee() -> None:
+    buffer = StrategyBuffer("call")
+    buffer.record(
+        SupervisorInsight(
+            "call",
+            "turn-1",
+            1,
+            ProspectEvidence(
+                inferred=InferredProspectEvidence(
+                    "turn-1",
+                    decision_authority=InferenceCandidate(
+                        DecisionAuthority.FINAL, 1.0
+                    ),
+                )
+            ),
+        )
+    )
+    provider = CapturingReasoningProvider(
+        _proposal(
+            topic=TopicCategory.COMMERCIAL_REQUEST,
+            commercial=CommercialRequest(CommercialRequestKind.GUARANTEE),
+        )
+    )
+    processor = _processor(provider, strategy_buffer=buffer)
+    result = TurnCoordinator("call", processor).handle(_final(2, "turn-2"))
+
+    assert processor.prospect_intelligence.inferred.decision_authority is not None
     assert result.turn_output is not None
     assert result.turn_output.pipeline_outcome == AuthoritativeResultKind.REDIRECT
     assert processor.current_state == ConversationState.NEW_CALL
