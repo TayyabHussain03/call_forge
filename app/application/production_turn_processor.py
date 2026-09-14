@@ -40,6 +40,7 @@ from app.conversation.prospect_intelligence.contracts import (
 )
 from app.conversation.prospect_intelligence.updater import ProspectIntelligenceUpdater
 from app.conversation.response_planning.contracts import (
+    AddresseeStatus,
     AuthoritativeResultKind,
     ExplanationNeed,
     InterruptionCategory,
@@ -66,6 +67,16 @@ from app.conversation.supervisor.buffer import (
     StrategyBufferSnapshot,
 )
 from app.conversation.supervisor.contracts import SupervisorInput, SupervisorInsight
+from app.conversation.understanding.contracts import (
+    FreeTextUnderstanding,
+    FreeTextUnderstandingInput,
+    LanguageProfile,
+)
+from app.conversation.understanding.mapper import UnderstandingEvidenceMapper
+from app.conversation.understanding.provider import (
+    FreeTextUnderstandingProvider,
+    UnderstandingError,
+)
 from app.core.constants import AgentAction, ConversationState
 from app.llm.providers.contact_understanding_provider import (
     ContactUnderstandingError,
@@ -141,6 +152,8 @@ class ProductionTurnProcessor(TurnProcessor):
             AvailableEscalationCapabilities()
         ),
         escalation_request_provider: EscalationRequestProvider | None = None,
+        free_text_understanding_provider: FreeTextUnderstandingProvider | None = None,
+        understanding_evidence_mapper: UnderstandingEvidenceMapper | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -177,6 +190,10 @@ class ProductionTurnProcessor(TurnProcessor):
         self._escalation_capabilities = escalation_capabilities
         self._escalation_request = (
             escalation_request_provider or _default_escalation_request
+        )
+        self._free_text_understanding = free_text_understanding_provider
+        self._understanding_mapper = (
+            understanding_evidence_mapper or UnderstandingEvidenceMapper()
         )
         self._recent_turns: tuple[RecentTurn, ...] = ()
         self._turn_count = 0
@@ -251,6 +268,7 @@ class ProductionTurnProcessor(TurnProcessor):
         budget = self._budget_state()
         strategy = None
         supervisor_insight = None
+        language_profile = None
         if priority == TrustedPriorityOutcome.NONE:
             supervisor_insight = self._strategy_buffer.consume_for(
                 turn.sequence_number
@@ -262,6 +280,20 @@ class ProductionTurnProcessor(TurnProcessor):
                 self._prospect_intelligence = self._prospect_updater.update(
                     self._prospect_intelligence,
                     supervisor_insight.prospect_evidence,
+                )
+            preliminary_context = self._build_lean_context(
+                turn,
+                self._latest_strategy,
+                supervisor_insight,
+            )
+            understanding, evidence = self._understanding_evidence(
+                turn, preliminary_context
+            )
+            if understanding is not None:
+                language_profile = understanding.language_profile
+            if evidence is not None:
+                self._prospect_intelligence = self._prospect_updater.update(
+                    self._prospect_intelligence, evidence
                 )
             evidence = self._prospect_evidence(turn, self._prospect_intelligence)
             if evidence is not None:
@@ -352,6 +384,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 interruption=turn.interruption,
                 explanation_need=_explanation_need(turn.conversation_category),
                 escalation_decision=escalation,
+                language_profile=language_profile,
             )
         )
         rendered = self._renderer.render(
@@ -386,6 +419,36 @@ class ProductionTurnProcessor(TurnProcessor):
             authoritative_result,
             terminal,
         )
+
+    def _understanding_evidence(
+        self,
+        turn: CoordinatedUserTurn,
+        lean_context: LeanTurnContext,
+    ) -> tuple[FreeTextUnderstanding | None, ProspectEvidence | None]:
+        """Run one advisory interpretation and map it without side effects."""
+        if self._free_text_understanding is None:
+            return None, None
+        try:
+            understanding = self._free_text_understanding.understand(
+                FreeTextUnderstandingInput(
+                    current_turn_id=turn.turn_id,
+                    current_user_message=lean_context.untrusted_user_input.message,
+                    current_state=lean_context.current_state,
+                    prospect_summary=lean_context.prospect,
+                    current_strategy=lean_context.strategy,
+                    interruption=lean_context.interruption,
+                    addressee_status=lean_context.addressee_status,
+                    conversation_category=lean_context.conversation_category,
+                )
+            )
+            if not isinstance(understanding, FreeTextUnderstanding):
+                raise TypeError("understanding provider returned an invalid contract")
+            if turn.addressee_status != AddresseeStatus.ADDRESSED_TO_AGENT:
+                return None, None
+            evidence = self._understanding_mapper.map(understanding, turn.turn_id)
+            return understanding, evidence
+        except (UnderstandingError, TypeError, ValueError):
+            return None, None
 
     def _escalation_decision(
         self,

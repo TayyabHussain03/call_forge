@@ -15,6 +15,7 @@ from app.core.constants import AgentAction, ConversationState, Tone
 
 if TYPE_CHECKING:
     from app.conversation.escalation.contracts import EscalationDecision
+    from app.conversation.understanding.contracts import LanguageProfile
 
 
 class ResponseLength(str, Enum):
@@ -171,6 +172,7 @@ class ResponsePlanningInput:
     trusted_context_summary: tuple[str, ...] = ()
     previous_acknowledgement: AcknowledgementKind = AcknowledgementKind.NONE
     escalation_decision: EscalationDecision | None = None
+    language_profile: LanguageProfile | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -179,6 +181,7 @@ class ResponsePlanningInput:
             raise ValueError("trusted context summary exceeds six items")
         if any(len(item) > 240 for item in self.trusted_context_summary):
             raise ValueError("trusted context summary item exceeds bounded length")
+        _validate_language_profile(self.language_profile)
 
 
 @dataclass(frozen=True)
@@ -197,3 +200,16 @@ class ResponsePlan:
     addressee_status: AddresseeStatus
     trusted_context_summary: tuple[str, ...] = ()
     escalation_decision: EscalationDecision | None = None
+    language_profile: LanguageProfile | None = None
+
+    def __post_init__(self) -> None:
+        _validate_language_profile(self.language_profile)
+
+
+def _validate_language_profile(value: object) -> None:
+    if value is None:
+        return
+    from app.conversation.understanding.contracts import LanguageProfile
+
+    if not isinstance(value, LanguageProfile):
+        raise TypeError("language profile has an invalid type")

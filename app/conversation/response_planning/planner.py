@@ -286,6 +286,7 @@ class ResponsePlanner:
             addressee_status=planning_input.addressee_status,
             trusted_context_summary=planning_input.trusted_context_summary,
             escalation_decision=planning_input.escalation_decision,
+            language_profile=planning_input.language_profile,
         )
 
 
