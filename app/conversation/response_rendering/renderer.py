@@ -6,6 +6,11 @@ import hashlib
 import re
 from abc import ABC, abstractmethod
 
+from app.conversation.escalation.contracts import (
+    EscalationCapability,
+    EscalationReason,
+    RecoveryMode,
+)
 from app.conversation.response_planning.contracts import (
     AddresseeStatus,
     AcknowledgementKind,
@@ -35,6 +40,12 @@ _ACKNOWLEDGEMENTS = {
     AcknowledgementKind.RIGHT: "Right.",
     AcknowledgementKind.UNDERSTOOD: "Understood.",
 }
+_CONFIRMED_PROMISE_PATTERNS = (
+    re.compile(r"\b(?:i|we)(?:'ll| will) (?:transfer|email|send|book|schedule)\b", re.I),
+    re.compile(r"\b(?:engineering|our team) will (?:confirm|email|send)\b", re.I),
+    re.compile(r"\btransfer you now\b", re.I),
+    re.compile(r"\b(?:callback|follow-up) (?:is|has been) (?:scheduled|confirmed)\b", re.I),
+)
 
 
 class RenderValidationError(ValueError):
@@ -73,6 +84,11 @@ def validate_rendered_text(
     text = " ".join(candidate.split())
     if not text:
         raise RenderValidationError("renderer output is empty")
+    decision = render_input.plan.escalation_decision
+    if decision is not None and any(
+        pattern.search(text) for pattern in _CONFIRMED_PROMISE_PATTERNS
+    ):
+        raise RenderValidationError("escalation output contains a confirmed promise")
     if len(text) > render_input.budget.max_characters:
         raise RenderValidationError("renderer output exceeds character budget")
     if _sentence_count(text) > _effective_sentence_limit(render_input):
@@ -100,6 +116,10 @@ def _compose(render_input: ResponseRenderInput) -> str:
         if plan.resume_previous_point and plan.pending_intent is not None:
             return f"No problem—coming back to where we left off: {plan.pending_intent.summary}"
         return "No problem—take your time."
+
+    escalation_text = _escalation_text(render_input)
+    if escalation_text is not None:
+        return escalation_text
 
     if render_input.authoritative_result == AuthoritativeResultKind.ESCALATE:
         return "I'd need to have that confirmed before giving you a definite answer."
@@ -162,6 +182,94 @@ def _grounded_fact_sentences(render_input: ResponseRenderInput) -> list[str]:
         facts.append(_as_sentence(f"{context.service_name}: {context.service_facts[0]}"))
         facts.extend(_as_sentence(fact) for fact in context.service_facts[1:])
     return facts
+
+
+def _escalation_text(render_input: ResponseRenderInput) -> str | None:
+    decision = render_input.plan.escalation_decision
+    if decision is None or decision.recovery_mode == RecoveryMode.PROCEED_NORMALLY:
+        return None
+    if decision.recovery_mode == RecoveryMode.ANSWER_WITH_EVIDENCE:
+        allowed = [
+            item.statement
+            for item in render_input.trusted_context.approved_evidence
+            if item.evidence_id in decision.evidence_ids
+        ]
+        if not allowed:
+            return _missing_fact_text()
+        return _with_resume(_as_sentence(allowed[0]), render_input)
+    if decision.recovery_mode == RecoveryMode.ASK_CLARIFYING_QUESTION:
+        if decision.capability_required in {
+            EscalationCapability.EMAIL,
+            EscalationCapability.MESSAGE,
+        }:
+            return (
+                "A confirmed contact method is needed before an information "
+                "follow-up can be requested. Which contact method should we verify?"
+            )
+        return "Could you clarify the specific detail you need so I don't guess?"
+    if decision.recovery_mode == RecoveryMode.SAFE_REDIRECT:
+        if decision.reason == EscalationReason.POLICY_RESTRICTED:
+            return "I can't disclose or authorize that here."
+        return "I can't help with that request here, but I can return to the relevant topic."
+    if decision.recovery_mode == RecoveryMode.POLITE_WRAP_UP:
+        return "Understood. I'll leave it there."
+    if decision.reason == EscalationReason.COMMERCIAL_AUTHORITY_REQUIRED:
+        lead = "I can't authorize or commit to that commercial request."
+    elif decision.reason == EscalationReason.HUMAN_REQUESTED:
+        lead = (
+            "I can offer that only as a request."
+            if decision.recovery_mode == RecoveryMode.OFFER_HUMAN_FOLLOW_UP
+            else "I can't transfer you directly from this call."
+        )
+    elif decision.reason == EscalationReason.CAPABILITY_UNAVAILABLE:
+        lead = _unavailable_capability_text(decision.capability_required)
+    elif decision.reason == EscalationReason.NONE:
+        lead = ""
+    else:
+        lead = _missing_fact_text()
+    offer = _offer_text(decision.recovery_mode)
+    text = " ".join(part for part in (lead, offer) if part)
+    return _with_resume(text, render_input)
+
+
+def _offer_text(mode: RecoveryMode) -> str | None:
+    return {
+        RecoveryMode.OFFER_HUMAN_FOLLOW_UP: (
+            "A human follow-up may be requested, but it is not confirmed yet."
+        ),
+        RecoveryMode.OFFER_CALLBACK: (
+            "A callback may be requested, but it is not scheduled yet."
+        ),
+        RecoveryMode.OFFER_INFORMATION_FOLLOW_UP: (
+            "A verified follow-up may be requested, but it is not confirmed yet."
+        ),
+    }.get(mode)
+
+
+def _unavailable_capability_text(
+    capability: EscalationCapability | None,
+) -> str:
+    labels = {
+        EscalationCapability.HUMAN_HANDOFF: "A live transfer isn't available here.",
+        EscalationCapability.CALLBACK: "A callback workflow isn't available here.",
+        EscalationCapability.EMAIL: "Email follow-up isn't available here.",
+        EscalationCapability.MESSAGE: "Messaging follow-up isn't available here.",
+        EscalationCapability.TECHNICAL_REVIEW: (
+            "A technical follow-up workflow isn't available here."
+        ),
+    }
+    return labels.get(capability, _missing_fact_text())
+
+
+def _with_resume(text: str, render_input: ResponseRenderInput) -> str:
+    plan = render_input.plan
+    if (
+        plan.resume_previous_point
+        and plan.pending_intent is not None
+        and plan.pending_intent.active
+    ):
+        return f"{text} We can return to {plan.pending_intent.summary}"
+    return text
 
 
 def _fit_to_budget(sentences: list[str], render_input: ResponseRenderInput) -> str:

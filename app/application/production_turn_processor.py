@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from app.brain.authority.models import AuthorityPolicy
 from app.brain.budget.evaluator import TrustedExitSignals
@@ -25,6 +26,14 @@ from app.conversation.context.contracts import (
     RecentTurn,
     TurnSpeaker,
 )
+from app.conversation.escalation.contracts import (
+    AvailableEscalationCapabilities,
+    EscalationDecision,
+    EscalationRequest,
+    GracefulEscalationInput,
+    KnowledgeRequestKind,
+)
+from app.conversation.escalation.policy import GracefulEscalationPolicy
 from app.conversation.prospect_intelligence.contracts import (
     ProspectEvidence,
     ProspectIntelligenceSnapshot,
@@ -88,6 +97,9 @@ StrategyInputProvider = Callable[
 ProspectEvidenceProvider = Callable[
     [CoordinatedUserTurn, ProspectIntelligenceSnapshot], ProspectEvidence | None
 ]
+EscalationRequestProvider = Callable[
+    [CoordinatedUserTurn, LeanTurnContext], EscalationRequest
+]
 
 
 class ProductionTurnProcessor(TurnProcessor):
@@ -124,6 +136,11 @@ class ProductionTurnProcessor(TurnProcessor):
         relevant_business_fields: tuple[str, ...] = (),
         campaign_goal: str | None = None,
         discovery_priorities: tuple[str, ...] = (),
+        escalation_policy: GracefulEscalationPolicy | None = None,
+        escalation_capabilities: AvailableEscalationCapabilities = (
+            AvailableEscalationCapabilities()
+        ),
+        escalation_request_provider: EscalationRequestProvider | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -156,6 +173,11 @@ class ProductionTurnProcessor(TurnProcessor):
         self._relevant_business_fields = tuple(relevant_business_fields)
         self._campaign_goal = campaign_goal
         self._discovery_priorities = tuple(discovery_priorities)
+        self._escalation_policy = escalation_policy or GracefulEscalationPolicy()
+        self._escalation_capabilities = escalation_capabilities
+        self._escalation_request = (
+            escalation_request_provider or _default_escalation_request
+        )
         self._recent_turns: tuple[RecentTurn, ...] = ()
         self._turn_count = 0
         self._reasoning_calls = 0
@@ -302,6 +324,21 @@ class ProductionTurnProcessor(TurnProcessor):
         rendering_context = self._trusted_rendering_context(
             turn, priority, authoritative_result
         )
+        escalation = self._escalation_decision(
+            turn,
+            lean_context,
+            slice_two,
+            priority,
+        )
+        if escalation is not None and escalation.evidence_ids:
+            rendering_context = replace(
+                rendering_context,
+                approved_evidence=tuple(
+                    item
+                    for item in lean_context.approved_evidence
+                    if item.evidence_id in escalation.evidence_ids
+                ),
+            )
         plan = self._planner.plan(
             ResponsePlanningInput(
                 authoritative_state=self._orchestrator.current_state,
@@ -314,6 +351,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 addressee_status=turn.addressee_status,
                 interruption=turn.interruption,
                 explanation_need=_explanation_need(turn.conversation_category),
+                escalation_decision=escalation,
             )
         )
         rendered = self._renderer.render(
@@ -347,6 +385,26 @@ class ProductionTurnProcessor(TurnProcessor):
             unfinished,
             authoritative_result,
             terminal,
+        )
+
+    def _escalation_decision(
+        self,
+        turn: CoordinatedUserTurn,
+        lean_context: LeanTurnContext,
+        slice_two: TurnResult,
+        priority: TrustedPriorityOutcome,
+    ) -> EscalationDecision | None:
+        """Evaluate communication recovery only on the normal post-Brain path."""
+        if priority != TrustedPriorityOutcome.NONE:
+            return None
+        return self._escalation_policy.evaluate(
+            GracefulEscalationInput(
+                context=lean_context,
+                request=self._escalation_request(turn, lean_context),
+                capabilities=self._escalation_capabilities,
+                scope_category=slice_two.trace.scope_category,
+                authority_tier=slice_two.trace.authority_tier,
+            )
         )
 
     def _build_lean_context(
@@ -475,6 +533,18 @@ def _no_prospect_evidence(
     previous: ProspectIntelligenceSnapshot,
 ) -> ProspectEvidence | None:
     return None
+
+
+def _default_escalation_request(
+    turn: CoordinatedUserTurn,
+    context: LeanTurnContext,
+) -> EscalationRequest:
+    """Map existing typed metadata only; never classify raw utterance text."""
+    if turn.conversation_category == InterruptionCategory.CLARIFICATION:
+        return EscalationRequest(KnowledgeRequestKind.AMBIGUOUS)
+    if turn.conversation_category == InterruptionCategory.QUESTION:
+        return EscalationRequest(KnowledgeRequestKind.FACT)
+    return EscalationRequest()
 
 
 def _result_kind(slice_two, slice_three) -> AuthoritativeResultKind:

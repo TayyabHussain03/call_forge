@@ -9,8 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from app.core.constants import AgentAction, ConversationState, Tone
+
+if TYPE_CHECKING:
+    from app.conversation.escalation.contracts import EscalationDecision
 
 
 class ResponseLength(str, Enum):
@@ -75,6 +79,10 @@ class ConversationMove(str, Enum):
     SAFE_RECOVERY = "safe_recovery"
     REDIRECT_SAFELY = "redirect_safely"
     ACKNOWLEDGE_ESCALATION = "acknowledge_escalation"
+    ANSWER_APPROVED_EVIDENCE = "answer_approved_evidence"
+    ACKNOWLEDGE_UNCERTAINTY = "acknowledge_uncertainty"
+    OFFER_SUPPORTED_NEXT_STEP = "offer_supported_next_step"
+    POLITE_WRAP_UP = "polite_wrap_up"
 
 
 class QuestionStrategy(str, Enum):
@@ -162,6 +170,7 @@ class ResponsePlanningInput:
     explanation_need: ExplanationNeed = ExplanationNeed.STANDARD
     trusted_context_summary: tuple[str, ...] = ()
     previous_acknowledgement: AcknowledgementKind = AcknowledgementKind.NONE
+    escalation_decision: EscalationDecision | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -187,3 +196,4 @@ class ResponsePlan:
     pending_intent: PendingConversationIntent | None
     addressee_status: AddresseeStatus
     trusted_context_summary: tuple[str, ...] = ()
+    escalation_decision: EscalationDecision | None = None

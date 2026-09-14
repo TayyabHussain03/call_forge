@@ -22,6 +22,10 @@ from app.contracts.contact_understanding import ContactIntent
 from app.contracts.conversation_context import ConversationContext
 from app.conversation.contact.resolver import ContactResolver
 from app.conversation.context.builder import LeanContextBuildInput, LeanContextBuilder
+from app.conversation.escalation.contracts import (
+    EscalationRequest,
+    KnowledgeRequestKind,
+)
 from app.conversation.engine import ConversationEngine
 from app.conversation.guardrails.action_validator import ActionValidator
 from app.conversation.guardrails.clarification import ClarificationEngine
@@ -120,6 +124,7 @@ def _processor(
     scope_validator: ScopePolicyValidator | None = None,
     prospect_evidence_provider=None,  # type: ignore[no-untyped-def]
     strategy_buffer: StrategyBuffer | None = None,
+    escalation_request_provider=None,  # type: ignore[no-untyped-def]
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -160,6 +165,7 @@ def _processor(
         contact_understanding_provider=contact_provider,
         prospect_evidence_provider=prospect_evidence_provider,
         strategy_buffer=strategy_buffer,
+        escalation_request_provider=escalation_request_provider,
     )
 
 
@@ -457,6 +463,52 @@ def test_trusted_dnc_and_not_interested_are_distinct_and_skip_brain() -> None:
         assert result.state.active_delivery.rendered_response.text
         assert processor.context.dnc_pending is (priority == TrustedPriorityOutcome.DNC)
         assert expected_fact in result.state.active_delivery.unfinished_point_summary
+
+
+def test_priority_paths_bypass_normal_escalation_logic() -> None:
+    for priority in (
+        TrustedPriorityOutcome.DNC,
+        TrustedPriorityOutcome.NOT_INTERESTED,
+    ):
+        calls = []
+
+        def escalation_request(turn, context):  # type: ignore[no-untyped-def]
+            calls.append(turn.turn_id)
+            return EscalationRequest()
+
+        processor = _processor(
+            CapturingReasoningProvider(_proposal()),
+            priority=priority,
+            escalation_request_provider=escalation_request,
+        )
+        result = TurnCoordinator("call", processor).handle(_final())
+
+        assert result.turn_output is not None
+        assert calls == []
+
+
+def test_missing_evidence_overrides_brain_answer_wording_without_new_execution() -> None:
+    provider = CapturingReasoningProvider(
+        _proposal(AgentAction.ANSWER_QUESTION, TopicCategory.BUSINESS_QUESTION)
+    )
+    processor = _processor(
+        provider,
+        initial_state=ConversationState.LISTEN,
+        escalation_request_provider=lambda turn, context: EscalationRequest(
+            KnowledgeRequestKind.TECHNICAL_DETAIL,
+            fact_key="unsupported_integration",
+            service_id="seo",
+        ),
+    )
+    result = TurnCoordinator("call", processor).handle(
+        _final(1, conversation_category=InterruptionCategory.QUESTION)
+    )
+
+    assert result.turn_output is not None
+    assert "don't have enough confirmed detail" in (
+        result.turn_output.rendered_response.text
+    )
+    assert "integration is supported" not in result.turn_output.rendered_response.text
 
 
 def test_provider_failure_out_of_scope_and_escalation_map_to_safe_responses() -> None:

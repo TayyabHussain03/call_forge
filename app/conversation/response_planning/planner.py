@@ -55,6 +55,10 @@ class ResponsePlanner:
                 pending=pending,
             )
 
+        escalation_plan = self._escalation_plan(planning_input, pending)
+        if escalation_plan is not None:
+            return escalation_plan
+
         safety_plan = self._safety_plan(planning_input, pending)
         if safety_plan is not None:
             return safety_plan
@@ -161,6 +165,92 @@ class ResponsePlanner:
             )
         return None
 
+    def _escalation_plan(
+        self,
+        planning_input: ResponsePlanningInput,
+        pending: PendingConversationIntent | None,
+    ) -> ResponsePlan | None:
+        from app.conversation.escalation.contracts import (
+            EscalationCapability,
+            RecoveryMode,
+        )
+
+        decision = planning_input.escalation_decision
+        if decision is None or decision.recovery_mode == RecoveryMode.PROCEED_NORMALLY:
+            return None
+        common = {
+            "handling": (
+                InterruptionHandling.INTEGRATE_IF_USEFUL
+                if decision.resume_previous_goal and pending is not None
+                else InterruptionHandling.HOLD_PRIOR_CONTEXT
+            ),
+            "resume": decision.resume_previous_goal and pending is not None,
+            "pending": pending,
+        }
+        if decision.recovery_mode == RecoveryMode.ANSWER_WITH_EVIDENCE:
+            return self._build(
+                planning_input,
+                ConversationMove.ANSWER_APPROVED_EVIDENCE,
+                ResponseLength.MODERATE,
+                QuestionStrategy.NONE,
+                **common,
+            )
+        if decision.recovery_mode == RecoveryMode.ASK_CLARIFYING_QUESTION:
+            needs_contact_explanation = decision.capability_required in {
+                EscalationCapability.EMAIL,
+                EscalationCapability.MESSAGE,
+            }
+            return self._build(
+                planning_input,
+                ConversationMove.CLARIFY_MEANING,
+                (
+                    ResponseLength.MODERATE
+                    if needs_contact_explanation
+                    else ResponseLength.SHORT
+                ),
+                QuestionStrategy.CLARIFY_CURRENT_INPUT,
+                clarification=True,
+                **common,
+            )
+        if decision.recovery_mode == RecoveryMode.SAFE_REDIRECT:
+            return self._build(
+                planning_input,
+                ConversationMove.REDIRECT_SAFELY,
+                ResponseLength.SHORT,
+                QuestionStrategy.NONE,
+                handling=InterruptionHandling.DROP_STALE_POINT,
+            )
+        if decision.recovery_mode == RecoveryMode.POLITE_WRAP_UP:
+            return self._build(
+                planning_input,
+                ConversationMove.POLITE_WRAP_UP,
+                ResponseLength.SHORT,
+                QuestionStrategy.NONE,
+                handling=InterruptionHandling.DROP_STALE_POINT,
+            )
+        goal = (
+            ConversationMove.ACKNOWLEDGE_UNCERTAINTY
+            if decision.recovery_mode == RecoveryMode.ACKNOWLEDGE_UNKNOWN
+            else ConversationMove.OFFER_SUPPORTED_NEXT_STEP
+        )
+        return self._build(
+            planning_input,
+            goal,
+            (
+                ResponseLength.MODERATE
+                if decision.resume_previous_goal
+                or decision.recovery_mode
+                in {
+                    RecoveryMode.OFFER_HUMAN_FOLLOW_UP,
+                    RecoveryMode.OFFER_CALLBACK,
+                    RecoveryMode.OFFER_INFORMATION_FOLLOW_UP,
+                }
+                else ResponseLength.SHORT
+            ),
+            QuestionStrategy.NONE,
+            **common,
+        )
+
     def _next_acknowledgement(
         self, planning_input: ResponsePlanningInput
     ) -> AcknowledgementKind:
@@ -195,6 +285,7 @@ class ResponsePlanner:
             pending_intent=pending,
             addressee_status=planning_input.addressee_status,
             trusted_context_summary=planning_input.trusted_context_summary,
+            escalation_decision=planning_input.escalation_decision,
         )
 
 

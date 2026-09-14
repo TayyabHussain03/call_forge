@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from app.conversation.context.contracts import ApprovedEvidenceItem
 from app.conversation.response_planning.contracts import (
     AuthoritativeResultKind,
     ConversationMove,
@@ -44,6 +45,7 @@ class TrustedRenderingContext:
     service_facts: tuple[str, ...] = ()
     contact_status: ContactConfirmationStatus = ContactConfirmationStatus.NONE
     role_label: str | None = None
+    approved_evidence: tuple[ApprovedEvidenceItem, ...] = ()
 
     def __post_init__(self) -> None:
         values = (self.primary_fact, self.service_name, self.role_label)
@@ -53,6 +55,11 @@ class TrustedRenderingContext:
             not fact.strip() or len(fact) > 200 for fact in self.service_facts
         ):
             raise ValueError("service facts must contain at most four bounded facts")
+        if len(self.approved_evidence) > 8 or any(
+            not isinstance(item, ApprovedEvidenceItem)
+            for item in self.approved_evidence
+        ):
+            raise ValueError("approved rendering evidence must be typed and bounded")
 
 
 @dataclass(frozen=True)
