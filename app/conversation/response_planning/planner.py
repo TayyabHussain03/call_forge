@@ -63,6 +63,10 @@ class ResponsePlanner:
         if safety_plan is not None:
             return safety_plan
 
+        consultative_plan = self._consultative_plan(planning_input, pending)
+        if consultative_plan is not None:
+            return consultative_plan
+
         category = planning_input.conversation_category
         interrupted = planning_input.interruption.was_interrupted
         if category == InterruptionCategory.QUESTION:
@@ -164,6 +168,59 @@ class ResponsePlanner:
                 pending=pending,
             )
         return None
+
+    def _consultative_plan(
+        self,
+        planning_input: ResponsePlanningInput,
+        pending: PendingConversationIntent | None,
+    ) -> ResponsePlan | None:
+        from app.conversation.consultative.contracts import (
+            AcknowledgementIntent,
+            ConsultativeMove,
+            QuestionPolicy,
+        )
+
+        decision = planning_input.consultative_decision
+        if decision is None:
+            return None
+        acknowledgement = (
+            self._next_acknowledgement(planning_input)
+            if decision.acknowledgement_intent != AcknowledgementIntent.NONE
+            else AcknowledgementKind.NONE
+        )
+        question = (
+            QuestionStrategy.NONE
+            if decision.question_policy == QuestionPolicy.NONE
+            else QuestionStrategy.CLARIFY_CURRENT_INPUT
+        )
+        goal = {
+            ConsultativeMove.EXPLAIN_RELEVANT_FIT: ConversationMove.EXPLAIN_RELEVANT_FIT,
+            ConsultativeMove.LOW_PRESSURE_CALLBACK: (
+                ConversationMove.LOW_PRESSURE_CONTINUATION
+            ),
+            ConsultativeMove.SIMPLIFY_EXPLANATION: ConversationMove.LANGUAGE_RECOVERY,
+            ConsultativeMove.GRACEFUL_CLOSE: ConversationMove.POLITE_WRAP_UP,
+            ConsultativeMove.ANSWER_DIRECT_QUESTION: (
+                ConversationMove.TRUTHFUL_COMMERCIAL_ANSWER
+                if decision.commercial_transparency_required
+                else ConversationMove.ANSWER_CURRENT_QUESTION
+            ),
+        }.get(decision.move, ConversationMove.CONSULTATIVE_DISCOVERY)
+        return self._build(
+            planning_input,
+            goal,
+            decision.explanation_depth,
+            question,
+            acknowledgement=acknowledgement,
+            clarification=question != QuestionStrategy.NONE,
+            handling=(
+                InterruptionHandling.INTEGRATE_IF_USEFUL
+                if decision.resume_previous_goal and pending is not None
+                else InterruptionHandling.DROP_STALE_POINT
+            ),
+            resume=decision.resume_previous_goal and pending is not None,
+            pending=pending,
+        )
 
     def _escalation_plan(
         self,
@@ -287,6 +344,8 @@ class ResponsePlanner:
             trusted_context_summary=planning_input.trusted_context_summary,
             escalation_decision=planning_input.escalation_decision,
             language_profile=planning_input.language_profile,
+            consultative_decision=planning_input.consultative_decision,
+            service_answer_context=planning_input.service_answer_context,
         )
 
 

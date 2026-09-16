@@ -14,6 +14,10 @@ from typing import TYPE_CHECKING
 from app.core.constants import AgentAction, ConversationState, Tone
 
 if TYPE_CHECKING:
+    from app.conversation.consultative.contracts import (
+        ConsultativeConversationDecision,
+        ServiceAnswerContext,
+    )
     from app.conversation.escalation.contracts import EscalationDecision
     from app.conversation.understanding.contracts import LanguageProfile
 
@@ -84,6 +88,11 @@ class ConversationMove(str, Enum):
     ACKNOWLEDGE_UNCERTAINTY = "acknowledge_uncertainty"
     OFFER_SUPPORTED_NEXT_STEP = "offer_supported_next_step"
     POLITE_WRAP_UP = "polite_wrap_up"
+    CONSULTATIVE_DISCOVERY = "consultative_discovery"
+    EXPLAIN_RELEVANT_FIT = "explain_relevant_fit"
+    LOW_PRESSURE_CONTINUATION = "low_pressure_continuation"
+    LANGUAGE_RECOVERY = "language_recovery"
+    TRUTHFUL_COMMERCIAL_ANSWER = "truthful_commercial_answer"
 
 
 class QuestionStrategy(str, Enum):
@@ -173,6 +182,8 @@ class ResponsePlanningInput:
     previous_acknowledgement: AcknowledgementKind = AcknowledgementKind.NONE
     escalation_decision: EscalationDecision | None = None
     language_profile: LanguageProfile | None = None
+    consultative_decision: ConsultativeConversationDecision | None = None
+    service_answer_context: ServiceAnswerContext | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -182,6 +193,9 @@ class ResponsePlanningInput:
         if any(len(item) > 240 for item in self.trusted_context_summary):
             raise ValueError("trusted context summary item exceeds bounded length")
         _validate_language_profile(self.language_profile)
+        _validate_consultative(
+            self.consultative_decision, self.service_answer_context
+        )
 
 
 @dataclass(frozen=True)
@@ -201,9 +215,14 @@ class ResponsePlan:
     trusted_context_summary: tuple[str, ...] = ()
     escalation_decision: EscalationDecision | None = None
     language_profile: LanguageProfile | None = None
+    consultative_decision: ConsultativeConversationDecision | None = None
+    service_answer_context: ServiceAnswerContext | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)
+        _validate_consultative(
+            self.consultative_decision, self.service_answer_context
+        )
 
 
 def _validate_language_profile(value: object) -> None:
@@ -213,3 +232,19 @@ def _validate_language_profile(value: object) -> None:
 
     if not isinstance(value, LanguageProfile):
         raise TypeError("language profile has an invalid type")
+
+
+def _validate_consultative(decision: object, answer: object) -> None:
+    if decision is None and answer is None:
+        return
+    from app.conversation.consultative.contracts import (
+        ConsultativeConversationDecision,
+        ServiceAnswerContext,
+    )
+
+    if decision is not None and not isinstance(
+        decision, ConsultativeConversationDecision
+    ):
+        raise TypeError("consultative decision has an invalid type")
+    if answer is not None and not isinstance(answer, ServiceAnswerContext):
+        raise TypeError("service answer context has an invalid type")

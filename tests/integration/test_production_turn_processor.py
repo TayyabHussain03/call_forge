@@ -21,7 +21,25 @@ from app.config.settings import get_settings
 from app.contracts.contact_understanding import ContactIntent
 from app.contracts.conversation_context import ConversationContext
 from app.conversation.contact.resolver import ContactResolver
+from app.conversation.consultative.contracts import (
+    ConsultativeTurnSignals,
+    ProblemCategory,
+    ProblemEvidence,
+    ProblemEvidenceBasis,
+    ProblemField,
+)
+from app.conversation.consultative.service_relevance import (
+    ServiceRelevanceResolver,
+    ServiceRelevanceRule,
+)
 from app.conversation.context.builder import LeanContextBuildInput, LeanContextBuilder
+from app.conversation.context.contracts import (
+    ApprovedEvidenceItem,
+    ApprovedEvidenceSourceKind,
+    EvidenceScope,
+    EvidenceScopeKind,
+    EvidenceType,
+)
 from app.conversation.escalation.contracts import (
     EscalationRequest,
     KnowledgeRequestKind,
@@ -46,6 +64,7 @@ from app.conversation.prospect_intelligence.contracts import (
 from app.conversation.response_planning.contracts import (
     AddresseeStatus,
     AuthoritativeResultKind,
+    ConversationMove,
     InterruptionCategory,
 )
 from app.conversation.response_planning.planner import ResponsePlanner
@@ -138,6 +157,10 @@ def _processor(
     strategy_buffer: StrategyBuffer | None = None,
     escalation_request_provider=None,  # type: ignore[no-untyped-def]
     free_text_understanding_provider=None,  # type: ignore[no-untyped-def]
+    problem_evidence_provider=None,  # type: ignore[no-untyped-def]
+    service_relevance_resolver=None,  # type: ignore[no-untyped-def]
+    consultative_signal_provider=None,  # type: ignore[no-untyped-def]
+    approved_evidence: tuple[ApprovedEvidenceItem, ...] = (),
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -180,6 +203,10 @@ def _processor(
         strategy_buffer=strategy_buffer,
         escalation_request_provider=escalation_request_provider,
         free_text_understanding_provider=free_text_understanding_provider,
+        problem_evidence_provider=problem_evidence_provider,
+        service_relevance_resolver=service_relevance_resolver,
+        consultative_signal_provider=consultative_signal_provider,
+        approved_evidence=approved_evidence,
     )
 
 
@@ -197,6 +224,35 @@ def _final(
         turn_id,
         utterance,
         **metadata,
+    )
+
+
+def _consultative_evidence() -> ApprovedEvidenceItem:
+    return ApprovedEvidenceItem(
+        "automation-follow-up",
+        "workflow_automation",
+        EvidenceType.APPROVED_CLAIM,
+        "AI Automation supports new-lead workflow automation.",
+        ApprovedEvidenceSourceKind.CURATED_SERVICE,
+        EvidenceScope(EvidenceScopeKind.SERVICE, "ai_automation"),
+    )
+
+
+def _consultative_resolver() -> ServiceRelevanceResolver:
+    scoped = ScopedCatalog(
+        load_catalog("app/config/service_config.yaml"), "campaign_full"
+    )
+    return ServiceRelevanceResolver(
+        scoped,
+        (
+            ServiceRelevanceRule(
+                "ai_automation",
+                frozenset({ProblemCategory.FOLLOW_UP}),
+                ("manual follow-up gap",),
+                frozenset({ProblemField.CURRENT_PROCESS}),
+                frozenset({"workflow_automation"}),
+            ),
+        ),
     )
 
 
@@ -958,3 +1014,142 @@ def test_failure_before_execution_leaves_state_and_context_unchanged() -> None:
     assert result.outcome == CoordinationOutcome.FAILED
     assert processor.context is original
     assert processor.current_state == ConversationState.NEW_CALL
+
+
+def test_production_consultative_path_updates_problem_before_grounded_fit() -> None:
+    evidence = _consultative_evidence()
+
+    def problem_evidence(turn, previous, prospect):  # type: ignore[no-untyped-def]
+        return ProblemEvidence(
+            source_turn_id=turn.turn_id,
+            category=ProblemCategory.FOLLOW_UP,
+            explicit_description="new leads are followed up late",
+            current_process="staff checks a shared inbox manually",
+            evidence_basis=ProblemEvidenceBasis.EXPLICIT,
+        )
+
+    processor = _processor(
+        MockReasoningProvider(
+            default=_proposal(AgentAction.ANSWER_QUESTION)
+        ),
+        initial_state=ConversationState.LISTEN,
+        context=ConversationContext(
+            "call", eligible_alternative_service_ids=("ai_automation",)
+        ),
+        problem_evidence_provider=problem_evidence,
+        service_relevance_resolver=_consultative_resolver(),
+        approved_evidence=(evidence,),
+    )
+    result = TurnCoordinator("call", processor).handle(_final())
+
+    assert result.turn_output is not None
+    assert processor.prospect_problem.explicit_description == (
+        "new leads are followed up late"
+    )
+    assert "AI Automation" in result.turn_output.rendered_response.text
+    assert evidence.statement in result.turn_output.rendered_response.text
+
+
+def test_consultative_advice_does_not_add_domain_mutation() -> None:
+    original = ConversationContext(
+        "call", eligible_alternative_service_ids=("ai_automation",)
+    )
+    processor = _processor(
+        MockReasoningProvider(
+            default=_proposal(AgentAction.ANSWER_QUESTION)
+        ),
+        initial_state=ConversationState.LISTEN,
+        context=original,
+        problem_evidence_provider=lambda turn, previous, prospect: ProblemEvidence(
+            turn.turn_id,
+            ProblemCategory.FOLLOW_UP,
+            "follow-up is delayed",
+            current_process="staff follows up manually",
+            evidence_basis=ProblemEvidenceBasis.EXPLICIT,
+        ),
+        service_relevance_resolver=_consultative_resolver(),
+        approved_evidence=(_consultative_evidence(),),
+    )
+
+    control = _processor(
+        MockReasoningProvider(
+            default=_proposal(AgentAction.ANSWER_QUESTION)
+        ),
+        initial_state=ConversationState.LISTEN,
+        context=original,
+    )
+
+    TurnCoordinator("call", processor).handle(_final())
+    TurnCoordinator("call", control).handle(_final())
+
+    assert processor.context == control.context
+    assert processor.current_state == control.current_state
+
+
+def test_trusted_priority_bypasses_consultative_evidence_and_brain() -> None:
+    calls = 0
+
+    def problem_evidence(turn, previous, prospect):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return None
+
+    provider = MockReasoningProvider(default=_proposal())
+    processor = _processor(
+        provider,
+        priority=TrustedPriorityOutcome.DNC,
+        problem_evidence_provider=problem_evidence,
+        service_relevance_resolver=_consultative_resolver(),
+    )
+
+    TurnCoordinator("call", processor).handle(_final())
+
+    assert calls == 0
+    assert provider.call_count == 0
+    assert processor.current_state == ConversationState.END_CALL
+
+
+def test_direct_question_wins_over_consultative_discovery_in_production() -> None:
+    processor = _processor(
+        MockReasoningProvider(
+            default=_proposal(AgentAction.ANSWER_QUESTION)
+        ),
+        initial_state=ConversationState.LISTEN,
+        problem_evidence_provider=lambda turn, previous, prospect: None,
+        consultative_signal_provider=lambda turn, context: ConsultativeTurnSignals(
+            direct_question=True
+        ),
+    )
+
+    result = TurnCoordinator("call", processor).handle(
+        _final(conversation_category=InterruptionCategory.OTHER)
+    )
+
+    assert result.turn_output is not None
+    assert (
+        result.turn_output.response_plan.communicative_goal
+        == ConversationMove.ANSWER_CURRENT_QUESTION
+    )
+
+
+def test_consultative_rendering_is_deterministic_in_production() -> None:
+    def build() -> ProductionTurnProcessor:
+        return _processor(
+            MockReasoningProvider(
+                default=_proposal(AgentAction.ANSWER_QUESTION)
+            ),
+            initial_state=ConversationState.LISTEN,
+            problem_evidence_provider=lambda turn, previous, prospect: None,
+            consultative_signal_provider=lambda turn, context: (
+                ConsultativeTurnSignals(two_way_ambiguity=True)
+            ),
+        )
+
+    first = TurnCoordinator("call", build()).handle(_final())
+    second = TurnCoordinator("call", build()).handle(_final())
+
+    assert first.turn_output is not None and second.turn_output is not None
+    assert (
+        first.turn_output.rendered_response.text
+        == second.turn_output.rendered_response.text
+    )

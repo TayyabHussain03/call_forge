@@ -6,6 +6,12 @@ import hashlib
 import re
 from abc import ABC, abstractmethod
 
+from app.conversation.consultative.contracts import (
+    ConsultativeMove,
+    ProblemField,
+    QuestionPolicy,
+)
+from app.conversation.context.contracts import EvidenceType
 from app.conversation.escalation.contracts import (
     EscalationCapability,
     EscalationReason,
@@ -128,6 +134,10 @@ def _compose(render_input: ResponseRenderInput) -> str:
     if render_input.authoritative_result == AuthoritativeResultKind.FALLBACK:
         return "I may have missed that. Could you clarify what you'd like help with?"
 
+    consultative_text = _consultative_text(render_input)
+    if consultative_text is not None:
+        return consultative_text
+
     if context.contact_status == ContactConfirmationStatus.UNCONFIRMED:
         return "Let me make sure I have that contact detail right—is it correct?"
     if context.contact_status == ContactConfirmationStatus.CONFIRMED:
@@ -182,6 +192,83 @@ def _grounded_fact_sentences(render_input: ResponseRenderInput) -> list[str]:
         facts.append(_as_sentence(f"{context.service_name}: {context.service_facts[0]}"))
         facts.extend(_as_sentence(fact) for fact in context.service_facts[1:])
     return facts
+
+
+def _consultative_text(render_input: ResponseRenderInput) -> str | None:
+    plan = render_input.plan
+    decision = plan.consultative_decision
+    if decision is None:
+        return None
+    if decision.commercial_transparency_required:
+        return (
+            "Yes—this is a business call to understand whether our services are "
+            "relevant; I won't assume there is a fit."
+        )
+    if decision.move == ConsultativeMove.SIMPLIFY_EXPLANATION:
+        language = plan.language_profile
+        if language is not None and language.preferred_response_language in {"ur", "hi"}:
+            return "Ji, simple words mein batata hoon—main baat ko seedha aur asaan rakhunga."
+        return "Let me put that more simply without changing the underlying point."
+    if decision.move == ConsultativeMove.EXPLAIN_RELEVANT_FIT:
+        return _grounded_service_fit(render_input)
+    if decision.move == ConsultativeMove.ANSWER_DIRECT_QUESTION:
+        if plan.service_answer_context is not None:
+            return _grounded_service_fit(render_input)
+        return _missing_fact_text()
+    if decision.move == ConsultativeMove.LOW_PRESSURE_CALLBACK:
+        return (
+            "Since now is busy, we can keep this brief and only discuss a callback "
+            "if useful."
+        )
+    if decision.move == ConsultativeMove.GRACEFUL_CLOSE:
+        return "It sounds like there may be nothing useful to change right now, so I won't force it."
+    if decision.move == ConsultativeMove.ASK_MICRO_COMMITMENT:
+        return "Would it be useful to take one small next step, without treating it as confirmed?"
+    if decision.question_policy != QuestionPolicy.NONE:
+        return _one_consultative_question(
+            decision.primary_information_gap,
+            decision.question_policy,
+        )
+    return None
+
+
+def _grounded_service_fit(render_input: ResponseRenderInput) -> str:
+    context = render_input.plan.service_answer_context
+    if context is None or not context.disclosure_allowed or not context.approved_evidence:
+        return _missing_fact_text()
+    evidence = context.approved_evidence[0]
+    if evidence.evidence_type == EvidenceType.CASE_STUDY:
+        return (
+            f"The relevant approved example for {context.service_name} is: "
+            f"{evidence.statement} This is context, not a guarantee of your outcome."
+        )
+    return (
+        f"Based on {context.problem_summary}, the relevant part of "
+        f"{context.service_name} is: {evidence.statement}"
+    )
+
+
+def _one_consultative_question(
+    gap: ProblemField | None,
+    policy: QuestionPolicy,
+) -> str:
+    if policy == QuestionPolicy.SHORT_CONTRAST:
+        return "Is the issue mainly with the process itself, or with how the team handles it?"
+    questions = {
+        ProblemField.UNDERLYING_PROBLEM: "What are you mainly hoping to improve?",
+        ProblemField.CURRENT_PROCESS: "How does that process work today?",
+        ProblemField.FRICTION: "What's creating the most difficulty in that process?",
+        ProblemField.IMPACT: "What usually happens when that issue comes up?",
+        ProblemField.DESIRED_OUTCOME: "What would a useful improvement look like?",
+        ProblemField.SOURCE_OR_CHANNEL: "Where does that work enter the process today?",
+        ProblemField.PROVIDER_SATISFACTION: (
+            "Is the current setup working well, or is there still something to improve?"
+        ),
+        ProblemField.OBJECTION_REASON: "What part concerns you most?",
+        ProblemField.ROLE_ROUTING: "Who is the right person to discuss how this works today?",
+        ProblemField.ALREADY_OFFERED: "Is there a different part of the problem to focus on?",
+    }
+    return questions.get(gap, "What would be most useful to understand first?")
 
 
 def _escalation_text(render_input: ResponseRenderInput) -> str | None:

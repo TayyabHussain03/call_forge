@@ -26,6 +26,19 @@ from app.conversation.context.contracts import (
     RecentTurn,
     TurnSpeaker,
 )
+from app.conversation.consultative.contracts import (
+    ConsultativeConversationDecision,
+    ConsultativeDecisionInput,
+    ConsultativeTurnSignals,
+    ProblemEvidence,
+    ProspectProblem,
+    ServiceAnswerContext,
+    ServiceFitDecision,
+    ServiceFitStatus,
+)
+from app.conversation.consultative.engine import ConsultativeDecisionEngine
+from app.conversation.consultative.problem import ProblemModelUpdater
+from app.conversation.consultative.service_relevance import ServiceRelevanceResolver
 from app.conversation.escalation.contracts import (
     AvailableEscalationCapabilities,
     EscalationDecision,
@@ -111,6 +124,13 @@ ProspectEvidenceProvider = Callable[
 EscalationRequestProvider = Callable[
     [CoordinatedUserTurn, LeanTurnContext], EscalationRequest
 ]
+ProblemEvidenceProvider = Callable[
+    [CoordinatedUserTurn, ProspectProblem, ProspectIntelligenceSnapshot],
+    ProblemEvidence | None,
+]
+ConsultativeSignalProvider = Callable[
+    [CoordinatedUserTurn, LeanTurnContext], ConsultativeTurnSignals
+]
 
 
 class ProductionTurnProcessor(TurnProcessor):
@@ -154,6 +174,12 @@ class ProductionTurnProcessor(TurnProcessor):
         escalation_request_provider: EscalationRequestProvider | None = None,
         free_text_understanding_provider: FreeTextUnderstandingProvider | None = None,
         understanding_evidence_mapper: UnderstandingEvidenceMapper | None = None,
+        initial_problem: ProspectProblem = ProspectProblem(),
+        problem_evidence_provider: ProblemEvidenceProvider | None = None,
+        problem_model_updater: ProblemModelUpdater | None = None,
+        service_relevance_resolver: ServiceRelevanceResolver | None = None,
+        consultative_decision_engine: ConsultativeDecisionEngine | None = None,
+        consultative_signal_provider: ConsultativeSignalProvider | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -195,6 +221,24 @@ class ProductionTurnProcessor(TurnProcessor):
         self._understanding_mapper = (
             understanding_evidence_mapper or UnderstandingEvidenceMapper()
         )
+        self._problem = initial_problem
+        self._problem_evidence = problem_evidence_provider
+        self._problem_updater = problem_model_updater or ProblemModelUpdater()
+        self._service_relevance = service_relevance_resolver
+        self._consultative_engine = (
+            consultative_decision_engine or ConsultativeDecisionEngine()
+        )
+        self._consultative_signals = (
+            consultative_signal_provider or _default_consultative_signals
+        )
+        self._consultative_enabled = any(
+            value is not None
+            for value in (
+                problem_evidence_provider,
+                service_relevance_resolver,
+                consultative_signal_provider,
+            )
+        )
         self._recent_turns: tuple[RecentTurn, ...] = ()
         self._turn_count = 0
         self._reasoning_calls = 0
@@ -218,6 +262,11 @@ class ProductionTurnProcessor(TurnProcessor):
     def prospect_intelligence(self) -> ProspectIntelligenceSnapshot:
         """Return the current immutable, call-scoped person snapshot."""
         return self._prospect_intelligence
+
+    @property
+    def prospect_problem(self) -> ProspectProblem:
+        """Return the bounded current problem model without persistence."""
+        return self._problem
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -300,6 +349,16 @@ class ProductionTurnProcessor(TurnProcessor):
                 self._prospect_intelligence = self._prospect_updater.update(
                     self._prospect_intelligence, evidence
                 )
+            if self._problem_evidence is not None:
+                problem_evidence = self._problem_evidence(
+                    turn,
+                    self._problem,
+                    self._prospect_intelligence,
+                )
+                if problem_evidence is not None:
+                    self._problem = self._problem_updater.update(
+                        self._problem, problem_evidence
+                    )
             strategy = self._strategy_engine.recommend(
                 self._strategy_input(
                     turn,
@@ -362,6 +421,12 @@ class ProductionTurnProcessor(TurnProcessor):
             slice_two,
             priority,
         )
+        consultative, service_answer = self._consultative_decision(
+            turn,
+            lean_context,
+            language_profile,
+            priority,
+        )
         if escalation is not None and escalation.evidence_ids:
             rendering_context = replace(
                 rendering_context,
@@ -385,6 +450,8 @@ class ProductionTurnProcessor(TurnProcessor):
                 explanation_need=_explanation_need(turn.conversation_category),
                 escalation_decision=escalation,
                 language_profile=language_profile,
+                consultative_decision=consultative,
+                service_answer_context=service_answer,
             )
         )
         rendered = self._renderer.render(
@@ -419,6 +486,54 @@ class ProductionTurnProcessor(TurnProcessor):
             authoritative_result,
             terminal,
         )
+
+    def _consultative_decision(
+        self,
+        turn: CoordinatedUserTurn,
+        lean_context: LeanTurnContext,
+        language_profile: LanguageProfile | None,
+        priority: TrustedPriorityOutcome,
+    ) -> tuple[
+        ConsultativeConversationDecision | None,
+        ServiceAnswerContext | None,
+    ]:
+        if not self._consultative_enabled or priority != TrustedPriorityOutcome.NONE:
+            return None, None
+        fit = (
+            self._service_relevance.resolve(
+                self._problem,
+                eligible_service_ids=lean_context.eligible_service_ids,
+                offered_service_ids=lean_context.offered_service_ids,
+                approved_evidence=lean_context.approved_evidence,
+            )
+            if self._service_relevance is not None
+            else ServiceFitDecision(
+                ServiceFitStatus.INSUFFICIENT_CONTEXT,
+            )
+        )
+        decision = self._consultative_engine.decide(
+            ConsultativeDecisionInput(
+                self._problem,
+                fit,
+                lean_context.prospect,
+                lean_context.strategy,
+                language_profile,
+                self._consultative_signals(turn, lean_context),
+                lean_context.conversation_category,
+                lean_context.addressee_status,
+                lean_context.pending_intent,
+            )
+        )
+        answer = (
+            self._service_relevance.build_answer_context(
+                fit,
+                self._problem,
+                lean_context.approved_evidence,
+            )
+            if self._service_relevance is not None
+            else None
+        )
+        return decision, answer
 
     def _understanding_evidence(
         self,
@@ -608,6 +723,17 @@ def _default_escalation_request(
     if turn.conversation_category == InterruptionCategory.QUESTION:
         return EscalationRequest(KnowledgeRequestKind.FACT)
     return EscalationRequest()
+
+
+def _default_consultative_signals(
+    turn: CoordinatedUserTurn,
+    context: LeanTurnContext,
+) -> ConsultativeTurnSignals:
+    """Use existing typed turn metadata only; never classify raw utterance text."""
+    return ConsultativeTurnSignals(
+        direct_question=turn.conversation_category == InterruptionCategory.QUESTION,
+        correction=turn.conversation_category == InterruptionCategory.CORRECTION,
+    )
 
 
 def _result_kind(slice_two, slice_three) -> AuthoritativeResultKind:
