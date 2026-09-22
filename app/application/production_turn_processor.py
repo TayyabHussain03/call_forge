@@ -67,6 +67,7 @@ from app.conversation.response_rendering.contracts import (
     TrustedRenderingContext,
 )
 from app.conversation.response_rendering.renderer import ResponseRenderer
+from app.conversation.realization.contracts import LeanContextView
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -463,6 +464,8 @@ class ProductionTurnProcessor(TurnProcessor):
                 ),
                 trusted_context=rendering_context,
                 variation_seed=turn.turn_id,
+                current_prospect_message=turn.utterance[:300],
+                lean_context_view=_lean_context_view(turn, self._problem, lean_context),
             )
         )
         unfinished = (
@@ -733,6 +736,24 @@ def _default_consultative_signals(
     return ConsultativeTurnSignals(
         direct_question=turn.conversation_category == InterruptionCategory.QUESTION,
         correction=turn.conversation_category == InterruptionCategory.CORRECTION,
+    )
+
+
+def _lean_context_view(
+    turn: CoordinatedUserTurn,
+    problem: ProspectProblem,
+    context: LeanTurnContext,
+) -> LeanContextView:
+    """Project only wording-safe current-turn context for a realizer provider."""
+    role = (
+        context.prospect.explicit_role.value.value
+        if context.prospect is not None and context.prospect.explicit_role is not None
+        else None
+    )
+    return LeanContextView(
+        turn.utterance[:300],
+        problem.explicit_description or problem.friction,
+        role,
     )
 
 

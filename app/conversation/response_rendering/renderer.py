@@ -134,6 +134,9 @@ def _compose(render_input: ResponseRenderInput) -> str:
     if render_input.authoritative_result == AuthoritativeResultKind.FALLBACK:
         return "I may have missed that. Could you clarify what you'd like help with?"
 
+    if render_input.identity_disclosure_required:
+        return render_input.identity_disclosure_statement
+
     consultative_text = _consultative_text(render_input)
     if consultative_text is not None:
         return consultative_text
@@ -221,7 +224,10 @@ def _consultative_text(render_input: ResponseRenderInput) -> str | None:
             "if useful."
         )
     if decision.move == ConsultativeMove.GRACEFUL_CLOSE:
-        return "It sounds like there may be nothing useful to change right now, so I won't force it."
+        return (
+            "It sounds like there may be nothing useful to change right now, "
+            "so I won't force it."
+        )
     if decision.move == ConsultativeMove.ASK_MICRO_COMMITMENT:
         return "Would it be useful to take one small next step, without treating it as confirmed?"
     if decision.question_policy != QuestionPolicy.NONE:

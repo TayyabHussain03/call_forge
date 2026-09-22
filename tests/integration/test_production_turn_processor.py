@@ -72,6 +72,8 @@ from app.conversation.response_rendering.renderer import (
     DeterministicResponseRenderer,
     ResponseRenderer,
 )
+from app.conversation.realization.provider import MockConversationRealizationProvider
+from app.conversation.realization.realizer import GuardedConversationRealizer
 from app.conversation.strategy.contracts import (
     ConversationMode,
     ConversationStrategyInput,
@@ -1153,3 +1155,31 @@ def test_consultative_rendering_is_deterministic_in_production() -> None:
         first.turn_output.rendered_response.text
         == second.turn_output.rendered_response.text
     )
+
+
+def test_production_can_supply_bounded_lean_view_to_guarded_realizer() -> None:
+    wording = "Okay, I can help with that."
+    realization_provider = MockConversationRealizationProvider(wording)
+    processor = _processor(
+        MockReasoningProvider(default=_proposal(AgentAction.ANSWER_QUESTION)),
+        initial_state=ConversationState.LISTEN,
+        renderer=GuardedConversationRealizer(
+            realization_provider, DeterministicResponseRenderer()
+        ),
+    )
+
+    result = TurnCoordinator("call", processor).handle(
+        _final(
+            utterance="How does this work?",
+            conversation_category=InterruptionCategory.QUESTION,
+        )
+    )
+
+    assert result.turn_output is not None
+    assert result.turn_output.rendered_response.text == wording
+    assert realization_provider.call_count == 1
+    assert realization_provider.last_input is not None
+    assert realization_provider.last_input.lean_context.current_user_message == (
+        "How does this work?"
+    )
+    assert not hasattr(realization_provider.last_input.lean_context, "transcript")

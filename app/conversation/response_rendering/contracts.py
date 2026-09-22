@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from app.conversation.context.contracts import ApprovedEvidenceItem
+from app.conversation.realization.contracts import LeanContextView
 from app.conversation.response_planning.contracts import (
     AuthoritativeResultKind,
     ConversationMove,
@@ -71,10 +72,32 @@ class ResponseRenderInput:
     budget: ResponseRenderingBudget
     trusted_context: TrustedRenderingContext = TrustedRenderingContext()
     variation_seed: str = "default"
+    current_prospect_message: str = "current prospect message"
+    lean_context_view: LeanContextView | None = None
+    identity_disclosure_required: bool = False
+    identity_disclosure_statement: str = (
+        "I'm an AI assistant calling on behalf of the business."
+    )
 
     def __post_init__(self) -> None:
         if len(self.variation_seed) > 80:
             raise ValueError("variation seed exceeds bounded length")
+        if (
+            not self.current_prospect_message.strip()
+            or len(self.current_prospect_message) > 300
+        ):
+            raise ValueError("current prospect message must contain 1-300 characters")
+        if self.lean_context_view is not None and not isinstance(
+            self.lean_context_view, LeanContextView
+        ):
+            raise TypeError("lean context view is invalid")
+        if not isinstance(self.identity_disclosure_required, bool):
+            raise TypeError("identity disclosure flag must be boolean")
+        if (
+            not self.identity_disclosure_statement.strip()
+            or len(self.identity_disclosure_statement) > 180
+        ):
+            raise ValueError("identity disclosure statement must be bounded")
 
 
 @dataclass(frozen=True)
