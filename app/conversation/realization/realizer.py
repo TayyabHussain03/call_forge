@@ -50,16 +50,29 @@ class GuardedConversationRealizer(ResponseRenderer):
             return self._fallback.render(effective_input)
         value = _input(effective_input, self._policy)
         try:
-            text = validate_realization(self._provider.realize(value), value)
-            return validate_rendered_text(text, effective_input)
+            candidate = self._provider.realize(value)
+        except (RealizationError, TimeoutError, TypeError, ValueError):
+            return self._fallback.render(effective_input)
+        try:
+            text = validate_realization(candidate, value)
+            rendered = validate_rendered_text(text, effective_input)
+            _record_validation(self._provider, True)
+            return rendered
         except (
-            RealizationError,
             RealizationValidationError,
-            TimeoutError,
             TypeError,
             ValueError,
         ):
+            _record_validation(self._provider, False)
             return self._fallback.render(effective_input)
+
+
+def _record_validation(
+    provider: ConversationRealizationProvider, accepted: bool
+) -> None:
+    recorder = getattr(provider, "record_validation", None)
+    if callable(recorder):
+        recorder(accepted)
 
 
 def _may_realize(render_input: ResponseRenderInput) -> bool:

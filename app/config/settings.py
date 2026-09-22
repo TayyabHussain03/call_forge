@@ -58,10 +58,15 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # ── LLM ──
-    llm_provider: str = "gemini"
+    llm_provider: str = "llm.gemini"
     gemini_api_key: str = Field(default="", description="Gemini API key")
     llm_model: str = "gemini-flash-latest"
-    llm_timeout_seconds: int = 15
+    llm_timeout_seconds: float = 15.0
+    llm_temperature: float = Field(default=0.2, ge=0, le=2)
+    llm_top_p: float = Field(default=0.9, gt=0, le=1)
+    llm_max_tokens: int = Field(default=256, ge=1, le=2048)
+    llm_structured_output: bool = True
+    llm_api_endpoint: str | None = None
 
     # ── Voice (optional for now) ──
     vapi_api_key: str = ""

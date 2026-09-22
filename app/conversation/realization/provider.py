@@ -3,12 +3,34 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import Enum
 
 from app.conversation.realization.contracts import RealizationInput
 
 
+class RealizationFailureKind(str, Enum):
+    """Bounded provider outcomes; every failure deterministically falls back."""
+
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    MALFORMED_RESPONSE = "malformed_response"
+    HTTP_ERROR = "http_error"
+    RATE_LIMIT = "rate_limit"
+    AUTHENTICATION_FAILURE = "authentication_failure"
+    UNKNOWN_FAILURE = "unknown_failure"
+
+
 class RealizationError(RuntimeError):
     """A wording provider failed; callers must fall back without retrying."""
+
+    def __init__(
+        self,
+        message: str,
+        kind: RealizationFailureKind = RealizationFailureKind.UNKNOWN_FAILURE,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class ConversationRealizationProvider(ABC):
