@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         ServiceAnswerContext,
     )
     from app.conversation.escalation.contracts import EscalationDecision
+    from app.conversation.sales_cognition.contracts import SalesConversationGuidance
     from app.conversation.understanding.contracts import LanguageProfile
 
 
@@ -184,6 +185,7 @@ class ResponsePlanningInput:
     language_profile: LanguageProfile | None = None
     consultative_decision: ConsultativeConversationDecision | None = None
     service_answer_context: ServiceAnswerContext | None = None
+    sales_guidance: SalesConversationGuidance | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -196,6 +198,7 @@ class ResponsePlanningInput:
         _validate_consultative(
             self.consultative_decision, self.service_answer_context
         )
+        _validate_sales_guidance(self.sales_guidance)
 
 
 @dataclass(frozen=True)
@@ -217,12 +220,14 @@ class ResponsePlan:
     language_profile: LanguageProfile | None = None
     consultative_decision: ConsultativeConversationDecision | None = None
     service_answer_context: ServiceAnswerContext | None = None
+    sales_guidance: SalesConversationGuidance | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)
         _validate_consultative(
             self.consultative_decision, self.service_answer_context
         )
+        _validate_sales_guidance(self.sales_guidance)
 
 
 def _validate_language_profile(value: object) -> None:
@@ -248,3 +253,12 @@ def _validate_consultative(decision: object, answer: object) -> None:
         raise TypeError("consultative decision has an invalid type")
     if answer is not None and not isinstance(answer, ServiceAnswerContext):
         raise TypeError("service answer context has an invalid type")
+
+
+def _validate_sales_guidance(value: object) -> None:
+    if value is None:
+        return
+    from app.conversation.sales_cognition.contracts import SalesConversationGuidance
+
+    if not isinstance(value, SalesConversationGuidance):
+        raise TypeError("sales guidance has an invalid type")

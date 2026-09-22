@@ -11,8 +11,14 @@ class ProspectRole(str, Enum):
     """Small conversational role taxonomy, not CRM title normalization."""
 
     OWNER = "owner"
+    FOUNDER = "founder"
     DECISION_MAKER = "decision_maker"
     MANAGER = "manager"
+    OPERATIONS_MANAGER = "operations_manager"
+    TECHNICAL_MANAGER = "technical_manager"
+    SALES_MANAGER = "sales_manager"
+    FINANCE_CONTACT = "finance_contact"
+    ASSISTANT = "assistant"
     ASSISTANT_MANAGER = "assistant_manager"
     RECEPTIONIST = "receptionist"
     GATEKEEPER = "gatekeeper"
@@ -65,6 +71,8 @@ class ObjectionType(str, Enum):
     TRUST = "trust"
     IMPLEMENTATION = "implementation"
     INTEGRATION = "integration"
+    INTERNAL_TEAM = "internal_team"
+    CONTRACT_LOCK = "contract_lock"
     UNKNOWN = "unknown"
 
 

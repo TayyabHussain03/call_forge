@@ -188,9 +188,11 @@ class ResponsePlanner:
             if decision.acknowledgement_intent != AcknowledgementIntent.NONE
             else AcknowledgementKind.NONE
         )
+        guidance = planning_input.sales_guidance
         question = (
             QuestionStrategy.NONE
             if decision.question_policy == QuestionPolicy.NONE
+            or (guidance is not None and guidance.question_focus is None)
             else QuestionStrategy.CLARIFY_CURRENT_INPUT
         )
         goal = {
@@ -209,7 +211,11 @@ class ResponsePlanner:
         return self._build(
             planning_input,
             goal,
-            decision.explanation_depth,
+            (
+                guidance.recommended_response_depth
+                if guidance is not None
+                else decision.explanation_depth
+            ),
             question,
             acknowledgement=acknowledgement,
             clarification=question != QuestionStrategy.NONE,
@@ -346,6 +352,7 @@ class ResponsePlanner:
             language_profile=planning_input.language_profile,
             consultative_decision=planning_input.consultative_decision,
             service_answer_context=planning_input.service_answer_context,
+            sales_guidance=planning_input.sales_guidance,
         )
 
 

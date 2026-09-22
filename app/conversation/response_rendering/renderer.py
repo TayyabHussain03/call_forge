@@ -230,11 +230,25 @@ def _consultative_text(render_input: ResponseRenderInput) -> str | None:
         )
     if decision.move == ConsultativeMove.ASK_MICRO_COMMITMENT:
         return "Would it be useful to take one small next step, without treating it as confirmed?"
-    if decision.question_policy != QuestionPolicy.NONE:
+    if (
+        decision.question_policy != QuestionPolicy.NONE
+        and plan.question_strategy != QuestionStrategy.NONE
+    ):
+        focus = (
+            plan.sales_guidance.question_focus
+            if plan.sales_guidance is not None
+            else decision.primary_information_gap
+        )
         return _one_consultative_question(
-            decision.primary_information_gap,
+            focus,
             decision.question_policy,
         )
+    if (
+        plan.sales_guidance is not None
+        and decision.question_policy != QuestionPolicy.NONE
+        and plan.question_strategy == QuestionStrategy.NONE
+    ):
+        return "Thanks—that gives me useful context."
     return None
 
 

@@ -31,6 +31,7 @@ from app.conversation.consultative.contracts import (
     ConsultativeDecisionInput,
     ConsultativeTurnSignals,
     ProblemEvidence,
+    ProblemField,
     ProspectProblem,
     ServiceAnswerContext,
     ServiceFitDecision,
@@ -57,6 +58,7 @@ from app.conversation.response_planning.contracts import (
     AuthoritativeResultKind,
     ExplanationNeed,
     InterruptionCategory,
+    QuestionStrategy,
     ResponsePlanningInput,
 )
 from app.conversation.response_planning.planner import ResponsePlanner
@@ -68,6 +70,12 @@ from app.conversation.response_rendering.contracts import (
 )
 from app.conversation.response_rendering.renderer import ResponseRenderer
 from app.conversation.realization.contracts import LeanContextView
+from app.conversation.sales_cognition.contracts import (
+    CognitionSignals,
+    SalesCognitionInput,
+    SalesConversationGuidance,
+)
+from app.conversation.sales_cognition.engine import HumanSalesCognitionEngine
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -132,6 +140,9 @@ ProblemEvidenceProvider = Callable[
 ConsultativeSignalProvider = Callable[
     [CoordinatedUserTurn, LeanTurnContext], ConsultativeTurnSignals
 ]
+CognitionSignalProvider = Callable[
+    [CoordinatedUserTurn, LeanTurnContext], CognitionSignals
+]
 
 
 class ProductionTurnProcessor(TurnProcessor):
@@ -181,6 +192,8 @@ class ProductionTurnProcessor(TurnProcessor):
         service_relevance_resolver: ServiceRelevanceResolver | None = None,
         consultative_decision_engine: ConsultativeDecisionEngine | None = None,
         consultative_signal_provider: ConsultativeSignalProvider | None = None,
+        sales_cognition_engine: HumanSalesCognitionEngine | None = None,
+        cognition_signal_provider: CognitionSignalProvider | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -232,6 +245,10 @@ class ProductionTurnProcessor(TurnProcessor):
         self._consultative_signals = (
             consultative_signal_provider or _default_consultative_signals
         )
+        self._sales_cognition = sales_cognition_engine or HumanSalesCognitionEngine()
+        self._cognition_signals = cognition_signal_provider or _default_cognition_signals
+        self._latest_sales_guidance: SalesConversationGuidance | None = None
+        self._recent_question_concepts: tuple[ProblemField, ...] = ()
         self._consultative_enabled = any(
             value is not None
             for value in (
@@ -268,6 +285,11 @@ class ProductionTurnProcessor(TurnProcessor):
     def prospect_problem(self) -> ProspectProblem:
         """Return the bounded current problem model without persistence."""
         return self._problem
+
+    @property
+    def sales_guidance(self) -> SalesConversationGuidance | None:
+        """Return current advisory sales cognition without domain authority."""
+        return self._latest_sales_guidance
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -428,6 +450,12 @@ class ProductionTurnProcessor(TurnProcessor):
             language_profile,
             priority,
         )
+        sales_guidance = self._sales_conversation_guidance(
+            turn,
+            lean_context,
+            consultative,
+            priority,
+        )
         if escalation is not None and escalation.evidence_ids:
             rendering_context = replace(
                 rendering_context,
@@ -453,6 +481,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 language_profile=language_profile,
                 consultative_decision=consultative,
                 service_answer_context=service_answer,
+                sales_guidance=sales_guidance,
             )
         )
         rendered = self._renderer.render(
@@ -476,6 +505,16 @@ class ProductionTurnProcessor(TurnProcessor):
         if strategy is not None:
             self._latest_strategy = strategy
             self._latest_strategy_source_sequence = turn.sequence_number
+        if (
+            sales_guidance is not None
+            and sales_guidance.question_focus is not None
+            and plan.question_strategy != QuestionStrategy.NONE
+        ):
+            self._recent_question_concepts = (
+                *self._recent_question_concepts,
+                sales_guidance.question_focus,
+            )[-4:]
+        self._latest_sales_guidance = sales_guidance
         self._recent_turns = (
             *self._recent_turns,
             RecentTurn(turn.turn_id, TurnSpeaker.USER, turn.utterance[:300]),
@@ -537,6 +576,35 @@ class ProductionTurnProcessor(TurnProcessor):
             else None
         )
         return decision, answer
+
+    def _sales_conversation_guidance(
+        self,
+        turn: CoordinatedUserTurn,
+        lean_context: LeanTurnContext,
+        decision: ConsultativeConversationDecision | None,
+        priority: TrustedPriorityOutcome,
+    ) -> SalesConversationGuidance | None:
+        """Derive advisory cognition only on the normal consultative path."""
+        if decision is None or priority != TrustedPriorityOutcome.NONE:
+            return None
+        fit = decision.service_fit or ServiceFitDecision(
+            ServiceFitStatus.INSUFFICIENT_CONTEXT
+        )
+        return self._sales_cognition.evaluate(
+            SalesCognitionInput(
+                prospect=lean_context.prospect,
+                problem=self._problem,
+                service_fit=fit,
+                strategy=lean_context.strategy,
+                consultative_decision=decision,
+                signals=self._cognition_signals(turn, lean_context),
+                recent_question_concepts=self._recent_question_concepts,
+                prior_guidance=self._latest_sales_guidance,
+                returning_discussion=(
+                    self._context.previous_conversation_exists or self._turn_count > 1
+                ),
+            )
+        )
 
     def _understanding_evidence(
         self,
@@ -735,6 +803,18 @@ def _default_consultative_signals(
     """Use existing typed turn metadata only; never classify raw utterance text."""
     return ConsultativeTurnSignals(
         direct_question=turn.conversation_category == InterruptionCategory.QUESTION,
+        correction=turn.conversation_category == InterruptionCategory.CORRECTION,
+    )
+
+
+def _default_cognition_signals(
+    turn: CoordinatedUserTurn,
+    context: LeanTurnContext,
+) -> CognitionSignals:
+    """Map typed turn metadata only; never infer cognition from raw text."""
+    return CognitionSignals(
+        confused=turn.conversation_category == InterruptionCategory.CLARIFICATION,
+        skeptical=turn.conversation_category == InterruptionCategory.OBJECTION,
         correction=turn.conversation_category == InterruptionCategory.CORRECTION,
     )
 
