@@ -163,6 +163,7 @@ def _processor(
     service_relevance_resolver=None,  # type: ignore[no-untyped-def]
     consultative_signal_provider=None,  # type: ignore[no-untyped-def]
     approved_evidence: tuple[ApprovedEvidenceItem, ...] = (),
+    active_knowledge_base_id: str | None = None,
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -209,6 +210,7 @@ def _processor(
         service_relevance_resolver=service_relevance_resolver,
         consultative_signal_provider=consultative_signal_provider,
         approved_evidence=approved_evidence,
+        active_knowledge_base_id=active_knowledge_base_id,
     )
 
 
@@ -267,6 +269,15 @@ def test_normal_runtime_turn_composes_full_existing_pipeline_once() -> None:
     assert provider.call_count == 1
     assert coordinator.state.active_delivery is not None
     assert coordinator.state.active_delivery.rendered_response.text
+
+
+def test_processor_holds_knowledge_reference_without_loading_or_retrieval() -> None:
+    processor = _processor(
+        MockReasoningProvider(default=_proposal()),
+        active_knowledge_base_id="knowledge-main",
+    )
+    assert processor.active_knowledge_base_id == "knowledge-main"
+    assert not hasattr(processor, "knowledge_retriever")
 
 
 def test_runtime_supplies_typed_strategy_guidance_to_brain() -> None:

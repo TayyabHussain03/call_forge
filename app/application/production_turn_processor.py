@@ -194,6 +194,7 @@ class ProductionTurnProcessor(TurnProcessor):
         consultative_signal_provider: ConsultativeSignalProvider | None = None,
         sales_cognition_engine: HumanSalesCognitionEngine | None = None,
         cognition_signal_provider: CognitionSignalProvider | None = None,
+        active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
@@ -249,6 +250,12 @@ class ProductionTurnProcessor(TurnProcessor):
         self._cognition_signals = cognition_signal_provider or _default_cognition_signals
         self._latest_sales_guidance: SalesConversationGuidance | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
+        if active_knowledge_base_id is not None and (
+            not active_knowledge_base_id.strip()
+            or len(active_knowledge_base_id) > 100
+        ):
+            raise ValueError("active knowledge base id must be bounded")
+        self._active_knowledge_base_id = active_knowledge_base_id
         self._consultative_enabled = any(
             value is not None
             for value in (
@@ -290,6 +297,11 @@ class ProductionTurnProcessor(TurnProcessor):
     def sales_guidance(self) -> SalesConversationGuidance | None:
         """Return current advisory sales cognition without domain authority."""
         return self._latest_sales_guidance
+
+    @property
+    def active_knowledge_base_id(self) -> str | None:
+        """Return the configured reference without loading knowledge."""
+        return self._active_knowledge_base_id
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
