@@ -39,6 +39,25 @@ class KnowledgeCategory(str, Enum):
     OTHER = "other"
 
 
+class KnowledgePurpose(str, Enum):
+    """Agent-neutral purpose labels for future authorized knowledge views."""
+
+    SERVICE_KNOWLEDGE = "service_knowledge"
+    SALES_KNOWLEDGE = "sales_knowledge"
+    FAQ = "faq"
+    INTERNAL_SOP = "internal_sop"
+    PRICING_POLICY = "pricing_policy"
+    LEGAL_POLICY = "legal_policy"
+    MARKETING_MATERIAL = "marketing_material"
+    CASE_STUDY = "case_study"
+    TRAINING_GUIDE = "training_guide"
+    OBJECTION_HANDLING = "objection_handling"
+    COMPETITIVE_POSITIONING = "competitive_positioning"
+    TECHNICAL_DOCUMENTATION = "technical_documentation"
+    BUSINESS_INFORMATION = "business_information"
+    OTHER = "other"
+
+
 class DocumentStatus(str, Enum):
     DRAFT = "draft"
     PUBLISHED = "published"
@@ -83,6 +102,7 @@ class KnowledgeDocument:
     checksum: str
     document_format: DocumentFormat
     source_name: str
+    purpose: KnowledgePurpose = KnowledgePurpose.OTHER
 
     def __post_init__(self) -> None:
         for value, name in (
@@ -103,6 +123,8 @@ class KnowledgeDocument:
             raise TypeError("document status must be a DocumentStatus")
         if not isinstance(self.document_format, DocumentFormat):
             raise TypeError("document format must be a DocumentFormat")
+        if not isinstance(self.purpose, KnowledgePurpose):
+            raise TypeError("document purpose must be a KnowledgePurpose")
         tags = tuple(self.tags)
         if len(tags) > 12 or any(not _TAG.fullmatch(tag) for tag in tags):
             raise ValueError("document tags must be normalized and bounded")

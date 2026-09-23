@@ -7,6 +7,7 @@ from app.knowledge.contracts import (
     KnowledgeBase,
     KnowledgeCategory,
     KnowledgeDocument,
+    KnowledgePurpose,
 )
 from app.knowledge.registry import KnowledgeRegistry, KnowledgeRegistryError
 
@@ -17,6 +18,7 @@ __all__ = [
     "KnowledgeBase",
     "KnowledgeCategory",
     "KnowledgeDocument",
+    "KnowledgePurpose",
     "KnowledgeRegistry",
     "KnowledgeRegistryError",
 ]
