@@ -353,6 +353,7 @@ class ResponsePlanner:
             consultative_decision=planning_input.consultative_decision,
             service_answer_context=planning_input.service_answer_context,
             sales_guidance=planning_input.sales_guidance,
+            playbook_guidance=planning_input.playbook_guidance,
         )
 
 

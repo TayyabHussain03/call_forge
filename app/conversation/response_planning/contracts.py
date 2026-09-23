@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     )
     from app.conversation.escalation.contracts import EscalationDecision
     from app.conversation.sales_cognition.contracts import SalesConversationGuidance
+    from app.conversation.sales_playbook.contracts import OpportunityGuidance
     from app.conversation.understanding.contracts import LanguageProfile
 
 
@@ -186,6 +187,7 @@ class ResponsePlanningInput:
     consultative_decision: ConsultativeConversationDecision | None = None
     service_answer_context: ServiceAnswerContext | None = None
     sales_guidance: SalesConversationGuidance | None = None
+    playbook_guidance: OpportunityGuidance | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -199,6 +201,7 @@ class ResponsePlanningInput:
             self.consultative_decision, self.service_answer_context
         )
         _validate_sales_guidance(self.sales_guidance)
+        _validate_playbook_guidance(self.playbook_guidance)
 
 
 @dataclass(frozen=True)
@@ -221,6 +224,7 @@ class ResponsePlan:
     consultative_decision: ConsultativeConversationDecision | None = None
     service_answer_context: ServiceAnswerContext | None = None
     sales_guidance: SalesConversationGuidance | None = None
+    playbook_guidance: OpportunityGuidance | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)
@@ -228,6 +232,7 @@ class ResponsePlan:
             self.consultative_decision, self.service_answer_context
         )
         _validate_sales_guidance(self.sales_guidance)
+        _validate_playbook_guidance(self.playbook_guidance)
 
 
 def _validate_language_profile(value: object) -> None:
@@ -262,3 +267,12 @@ def _validate_sales_guidance(value: object) -> None:
 
     if not isinstance(value, SalesConversationGuidance):
         raise TypeError("sales guidance has an invalid type")
+
+
+def _validate_playbook_guidance(value: object) -> None:
+    if value is None:
+        return
+    from app.conversation.sales_playbook.contracts import OpportunityGuidance
+
+    if not isinstance(value, OpportunityGuidance):
+        raise TypeError("playbook guidance has an invalid type")

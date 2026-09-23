@@ -74,6 +74,13 @@ from app.conversation.response_rendering.renderer import (
 )
 from app.conversation.realization.provider import MockConversationRealizationProvider
 from app.conversation.realization.realizer import GuardedConversationRealizer
+from app.conversation.sales_playbook.contracts import (
+    BenefitCategory,
+    BusinessContext,
+    BusinessSituation,
+    DiscoveryTopic,
+    ServicePlaybook,
+)
 from app.conversation.strategy.contracts import (
     ConversationMode,
     ConversationStrategyInput,
@@ -164,6 +171,8 @@ def _processor(
     consultative_signal_provider=None,  # type: ignore[no-untyped-def]
     approved_evidence: tuple[ApprovedEvidenceItem, ...] = (),
     active_knowledge_base_id: str | None = None,
+    service_playbooks: tuple[ServicePlaybook, ...] = (),
+    playbook_context_provider=None,  # type: ignore[no-untyped-def]
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -211,6 +220,8 @@ def _processor(
         consultative_signal_provider=consultative_signal_provider,
         approved_evidence=approved_evidence,
         active_knowledge_base_id=active_knowledge_base_id,
+        service_playbooks=service_playbooks,
+        playbook_context_provider=playbook_context_provider,
     )
 
 
@@ -278,6 +289,35 @@ def test_processor_holds_knowledge_reference_without_loading_or_retrieval() -> N
     )
     assert processor.active_knowledge_base_id == "knowledge-main"
     assert not hasattr(processor, "knowledge_retriever")
+
+
+def test_processor_carries_playbook_advice_without_changing_authoritative_flow() -> None:
+    playbook = ServicePlaybook(
+        "automation",
+        "Automation",
+        "operations",
+        "Advisory workflow opportunity.",
+        frozenset({"business"}),
+        frozenset({BusinessSituation.MANUAL_WORKFLOW}),
+        (DiscoveryTopic.CURRENT_WORKFLOW,),
+        benefits=frozenset({BenefitCategory.OPERATIONAL}),
+    )
+    processor = _processor(
+        MockReasoningProvider(default=_proposal()),
+        context=ConversationContext(
+            "call", eligible_alternative_service_ids=("automation",)
+        ),
+        consultative_signal_provider=lambda turn, context: ConsultativeTurnSignals(),
+        service_playbooks=(playbook,),
+        playbook_context_provider=lambda turn, context: BusinessContext(
+            "business", frozenset({BusinessSituation.MANUAL_WORKFLOW})
+        ),
+    )
+    result = TurnCoordinator("call", processor).handle(_final())
+    assert result.outcome == CoordinationOutcome.TURN_PROCESSED
+    assert processor.playbook_guidance is not None
+    assert processor.playbook_guidance.selected_service_id == "automation"
+    assert processor.current_state == ConversationState.GREETING
 
 
 def test_runtime_supplies_typed_strategy_guidance_to_brain() -> None:

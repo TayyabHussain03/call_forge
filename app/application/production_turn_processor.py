@@ -76,6 +76,13 @@ from app.conversation.sales_cognition.contracts import (
     SalesConversationGuidance,
 )
 from app.conversation.sales_cognition.engine import HumanSalesCognitionEngine
+from app.conversation.sales_playbook.contracts import (
+    BusinessContext,
+    OpportunityGuidance,
+    SalesPlaybookInput,
+    ServicePlaybook,
+)
+from app.conversation.sales_playbook.engine import SalesPlaybookIntelligenceEngine
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -143,6 +150,9 @@ ConsultativeSignalProvider = Callable[
 CognitionSignalProvider = Callable[
     [CoordinatedUserTurn, LeanTurnContext], CognitionSignals
 ]
+PlaybookContextProvider = Callable[
+    [CoordinatedUserTurn, LeanTurnContext], BusinessContext
+]
 
 
 class ProductionTurnProcessor(TurnProcessor):
@@ -194,6 +204,9 @@ class ProductionTurnProcessor(TurnProcessor):
         consultative_signal_provider: ConsultativeSignalProvider | None = None,
         sales_cognition_engine: HumanSalesCognitionEngine | None = None,
         cognition_signal_provider: CognitionSignalProvider | None = None,
+        sales_playbook_engine: SalesPlaybookIntelligenceEngine | None = None,
+        service_playbooks: tuple[ServicePlaybook, ...] = (),
+        playbook_context_provider: PlaybookContextProvider | None = None,
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -249,6 +262,10 @@ class ProductionTurnProcessor(TurnProcessor):
         self._sales_cognition = sales_cognition_engine or HumanSalesCognitionEngine()
         self._cognition_signals = cognition_signal_provider or _default_cognition_signals
         self._latest_sales_guidance: SalesConversationGuidance | None = None
+        self._sales_playbook = sales_playbook_engine or SalesPlaybookIntelligenceEngine()
+        self._service_playbooks = tuple(service_playbooks)
+        self._playbook_context = playbook_context_provider
+        self._latest_playbook_guidance: OpportunityGuidance | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -302,6 +319,11 @@ class ProductionTurnProcessor(TurnProcessor):
     def active_knowledge_base_id(self) -> str | None:
         """Return the configured reference without loading knowledge."""
         return self._active_knowledge_base_id
+
+    @property
+    def playbook_guidance(self) -> OpportunityGuidance | None:
+        """Return the latest advisory opportunity without service authority."""
+        return self._latest_playbook_guidance
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -468,6 +490,13 @@ class ProductionTurnProcessor(TurnProcessor):
             consultative,
             priority,
         )
+        playbook_guidance = self._playbook_opportunity_guidance(
+            turn,
+            lean_context,
+            consultative,
+            sales_guidance,
+            priority,
+        )
         if escalation is not None and escalation.evidence_ids:
             rendering_context = replace(
                 rendering_context,
@@ -494,6 +523,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 consultative_decision=consultative,
                 service_answer_context=service_answer,
                 sales_guidance=sales_guidance,
+                playbook_guidance=playbook_guidance,
             )
         )
         rendered = self._renderer.render(
@@ -527,6 +557,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 sales_guidance.question_focus,
             )[-4:]
         self._latest_sales_guidance = sales_guidance
+        self._latest_playbook_guidance = playbook_guidance
         self._recent_turns = (
             *self._recent_turns,
             RecentTurn(turn.turn_id, TurnSpeaker.USER, turn.utterance[:300]),
@@ -614,6 +645,38 @@ class ProductionTurnProcessor(TurnProcessor):
                 prior_guidance=self._latest_sales_guidance,
                 returning_discussion=(
                     self._context.previous_conversation_exists or self._turn_count > 1
+                ),
+            )
+        )
+
+    def _playbook_opportunity_guidance(
+        self,
+        turn: CoordinatedUserTurn,
+        lean_context: LeanTurnContext,
+        decision: ConsultativeConversationDecision | None,
+        sales_guidance: SalesConversationGuidance | None,
+        priority: TrustedPriorityOutcome,
+    ) -> OpportunityGuidance | None:
+        """Evaluate structured playbooks only on the normal advisory path."""
+        if (
+            priority != TrustedPriorityOutcome.NONE
+            or decision is None
+            or self._playbook_context is None
+            or not self._service_playbooks
+        ):
+            return None
+        return self._sales_playbook.evaluate(
+            SalesPlaybookInput(
+                context=self._playbook_context(turn, lean_context),
+                playbooks=self._service_playbooks,
+                eligible_service_ids=frozenset(lean_context.eligible_service_ids),
+                prospect=lean_context.prospect,
+                strategy=lean_context.strategy,
+                problem=self._problem,
+                consultative_decision=decision,
+                sales_guidance=sales_guidance,
+                already_discussed_service_ids=frozenset(
+                    lean_context.offered_service_ids
                 ),
             )
         )
