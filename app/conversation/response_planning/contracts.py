@@ -189,6 +189,7 @@ class ResponsePlanningInput:
     sales_guidance: SalesConversationGuidance | None = None
     playbook_guidance: OpportunityGuidance | None = None
     business_conversation: object | None = None
+    business_diagnostic: object | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -204,6 +205,7 @@ class ResponsePlanningInput:
         _validate_sales_guidance(self.sales_guidance)
         _validate_playbook_guidance(self.playbook_guidance)
         _validate_business_conversation(self.business_conversation)
+        _validate_business_diagnostic(self.business_diagnostic)
 
 
 @dataclass(frozen=True)
@@ -228,6 +230,7 @@ class ResponsePlan:
     sales_guidance: SalesConversationGuidance | None = None
     playbook_guidance: OpportunityGuidance | None = None
     business_conversation: object | None = None
+    business_diagnostic: object | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)
@@ -237,6 +240,7 @@ class ResponsePlan:
         _validate_sales_guidance(self.sales_guidance)
         _validate_playbook_guidance(self.playbook_guidance)
         _validate_business_conversation(self.business_conversation)
+        _validate_business_diagnostic(self.business_diagnostic)
 
 
 def _validate_language_profile(value: object) -> None:
@@ -288,3 +292,11 @@ def _validate_business_conversation(value: object) -> None:
     from app.conversation.business_conversation.contracts import BusinessConversationSnapshot
     if not isinstance(value, BusinessConversationSnapshot):
         raise TypeError("business conversation has an invalid type")
+
+
+def _validate_business_diagnostic(value: object) -> None:
+    if value is None:
+        return
+    from app.conversation.business_diagnostic.contracts import BusinessDiagnosticSnapshot
+    if not isinstance(value, BusinessDiagnosticSnapshot):
+        raise TypeError("business diagnostic has an invalid type")

@@ -90,6 +90,11 @@ from app.conversation.business_conversation.contracts import (
 from app.conversation.business_conversation.engine import (
     BusinessConversationIntelligenceEngine,
 )
+from app.conversation.business_diagnostic.contracts import (
+    BusinessDiagnosticInput,
+    BusinessDiagnosticSnapshot,
+)
+from app.conversation.business_diagnostic.engine import BusinessDiagnosticEngine
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -221,6 +226,7 @@ class ProductionTurnProcessor(TurnProcessor):
         business_conversation_engine: BusinessConversationIntelligenceEngine | None = None,
         business_conversation_evidence_provider: BusinessConversationEvidenceProvider | None = None,
         initial_business_conversation: BusinessConversationSnapshot | None = None,
+        business_diagnostic_engine: BusinessDiagnosticEngine | None = None,
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -283,6 +289,8 @@ class ProductionTurnProcessor(TurnProcessor):
         self._business_conversation = initial_business_conversation or BusinessConversationSnapshot()
         self._business_conversation_engine = business_conversation_engine or BusinessConversationIntelligenceEngine()
         self._business_conversation_evidence = business_conversation_evidence_provider
+        self._business_diagnostic = business_diagnostic_engine or BusinessDiagnosticEngine()
+        self._latest_business_diagnostic: BusinessDiagnosticSnapshot | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -346,6 +354,11 @@ class ProductionTurnProcessor(TurnProcessor):
     def business_conversation(self) -> BusinessConversationSnapshot:
         """Return call-scoped advisory understanding, never domain authority."""
         return self._business_conversation
+
+    @property
+    def business_diagnostic(self) -> BusinessDiagnosticSnapshot | None:
+        """Return latest non-commercial diagnostic without execution authority."""
+        return self._latest_business_diagnostic
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -520,11 +533,19 @@ class ProductionTurnProcessor(TurnProcessor):
             consultative,
             priority,
         )
+        diagnostic = self._business_diagnostic.diagnose(
+            BusinessDiagnosticInput(
+                self._business_conversation,
+                lean_context.prospect,
+                lean_context.strategy,
+            )
+        ) if priority == TrustedPriorityOutcome.NONE else None
         playbook_guidance = self._playbook_opportunity_guidance(
             turn,
             lean_context,
             consultative,
             sales_guidance,
+            diagnostic,
             priority,
         )
         if escalation is not None and escalation.evidence_ids:
@@ -555,6 +576,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 sales_guidance=sales_guidance,
                 playbook_guidance=playbook_guidance,
                 business_conversation=self._business_conversation,
+                business_diagnostic=diagnostic,
             )
         )
         rendered = self._renderer.render(
@@ -589,6 +611,7 @@ class ProductionTurnProcessor(TurnProcessor):
             )[-4:]
         self._latest_sales_guidance = sales_guidance
         self._latest_playbook_guidance = playbook_guidance
+        self._latest_business_diagnostic = diagnostic
         self._recent_turns = (
             *self._recent_turns,
             RecentTurn(turn.turn_id, TurnSpeaker.USER, turn.utterance[:300]),
@@ -686,6 +709,7 @@ class ProductionTurnProcessor(TurnProcessor):
         lean_context: LeanTurnContext,
         decision: ConsultativeConversationDecision | None,
         sales_guidance: SalesConversationGuidance | None,
+        diagnostic: BusinessDiagnosticSnapshot | None,
         priority: TrustedPriorityOutcome,
     ) -> OpportunityGuidance | None:
         """Evaluate structured playbooks only on the normal advisory path."""
@@ -710,6 +734,7 @@ class ProductionTurnProcessor(TurnProcessor):
                     lean_context.offered_service_ids
                 ),
                 business_conversation=self._business_conversation,
+                business_diagnostic=diagnostic,
             )
         )
 

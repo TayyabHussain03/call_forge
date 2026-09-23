@@ -86,6 +86,7 @@ from app.conversation.business_conversation.contracts import (
     BusinessFactKind,
     ObservedBusinessFact,
 )
+from app.conversation.business_diagnostic.contracts import DiagnosticFocus
 from app.conversation.strategy.contracts import (
     ConversationMode,
     ConversationStrategyInput,
@@ -1265,3 +1266,6 @@ def test_processor_carries_bci_advice_without_changing_authoritative_response() 
     assert result.turn_output.rendered_response == baseline_result.turn_output.rendered_response
     assert processor.business_conversation.facts[0].value == "manual spreadsheet"
     assert result.turn_output.response_plan.business_conversation == processor.business_conversation
+    assert processor.business_diagnostic is not None
+    assert processor.business_diagnostic.diagnostic_focus == DiagnosticFocus.WORKFLOW
+    assert result.turn_output.response_plan.business_diagnostic == processor.business_diagnostic
