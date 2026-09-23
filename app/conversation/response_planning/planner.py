@@ -354,6 +354,7 @@ class ResponsePlanner:
             service_answer_context=planning_input.service_answer_context,
             sales_guidance=planning_input.sales_guidance,
             playbook_guidance=planning_input.playbook_guidance,
+            business_conversation=planning_input.business_conversation,
         )
 
 

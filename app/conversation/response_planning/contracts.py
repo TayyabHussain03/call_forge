@@ -188,6 +188,7 @@ class ResponsePlanningInput:
     service_answer_context: ServiceAnswerContext | None = None
     sales_guidance: SalesConversationGuidance | None = None
     playbook_guidance: OpportunityGuidance | None = None
+    business_conversation: object | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -202,6 +203,7 @@ class ResponsePlanningInput:
         )
         _validate_sales_guidance(self.sales_guidance)
         _validate_playbook_guidance(self.playbook_guidance)
+        _validate_business_conversation(self.business_conversation)
 
 
 @dataclass(frozen=True)
@@ -225,6 +227,7 @@ class ResponsePlan:
     service_answer_context: ServiceAnswerContext | None = None
     sales_guidance: SalesConversationGuidance | None = None
     playbook_guidance: OpportunityGuidance | None = None
+    business_conversation: object | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)
@@ -233,6 +236,7 @@ class ResponsePlan:
         )
         _validate_sales_guidance(self.sales_guidance)
         _validate_playbook_guidance(self.playbook_guidance)
+        _validate_business_conversation(self.business_conversation)
 
 
 def _validate_language_profile(value: object) -> None:
@@ -276,3 +280,11 @@ def _validate_playbook_guidance(value: object) -> None:
 
     if not isinstance(value, OpportunityGuidance):
         raise TypeError("playbook guidance has an invalid type")
+
+
+def _validate_business_conversation(value: object) -> None:
+    if value is None:
+        return
+    from app.conversation.business_conversation.contracts import BusinessConversationSnapshot
+    if not isinstance(value, BusinessConversationSnapshot):
+        raise TypeError("business conversation has an invalid type")

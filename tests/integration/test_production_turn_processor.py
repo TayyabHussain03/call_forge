@@ -81,6 +81,11 @@ from app.conversation.sales_playbook.contracts import (
     DiscoveryTopic,
     ServicePlaybook,
 )
+from app.conversation.business_conversation.contracts import (
+    BusinessConversationEvidence,
+    BusinessFactKind,
+    ObservedBusinessFact,
+)
 from app.conversation.strategy.contracts import (
     ConversationMode,
     ConversationStrategyInput,
@@ -173,6 +178,7 @@ def _processor(
     active_knowledge_base_id: str | None = None,
     service_playbooks: tuple[ServicePlaybook, ...] = (),
     playbook_context_provider=None,  # type: ignore[no-untyped-def]
+    business_conversation_evidence_provider=None,  # type: ignore[no-untyped-def]
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -222,6 +228,7 @@ def _processor(
         active_knowledge_base_id=active_knowledge_base_id,
         service_playbooks=service_playbooks,
         playbook_context_provider=playbook_context_provider,
+        business_conversation_evidence_provider=business_conversation_evidence_provider,
     )
 
 
@@ -1234,3 +1241,27 @@ def test_production_can_supply_bounded_lean_view_to_guarded_realizer() -> None:
         "How does this work?"
     )
     assert not hasattr(realization_provider.last_input.lean_context, "transcript")
+
+
+def test_processor_carries_bci_advice_without_changing_authoritative_response() -> None:
+    baseline = _processor(MockReasoningProvider(default=_proposal()))
+    processor = _processor(
+        MockReasoningProvider(default=_proposal()),
+        business_conversation_evidence_provider=lambda turn, context, understanding: (
+            BusinessConversationEvidence(
+                facts=(
+                    ObservedBusinessFact(
+                        BusinessFactKind.CURRENT_WORKFLOW, "manual spreadsheet", turn.turn_id
+                    ),
+                )
+            )
+        ),
+    )
+    result = TurnCoordinator("call", processor).handle(_final())
+    baseline_result = TurnCoordinator("call", baseline).handle(_final())
+    assert result.turn_output is not None
+    assert baseline_result.turn_output is not None
+    assert result.turn_output.pipeline_outcome == AuthoritativeResultKind.EXECUTED
+    assert result.turn_output.rendered_response == baseline_result.turn_output.rendered_response
+    assert processor.business_conversation.facts[0].value == "manual spreadsheet"
+    assert result.turn_output.response_plan.business_conversation == processor.business_conversation

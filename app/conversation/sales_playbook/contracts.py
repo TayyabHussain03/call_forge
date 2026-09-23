@@ -285,6 +285,7 @@ class SalesPlaybookInput:
     consultative_decision: ConsultativeConversationDecision | None
     sales_guidance: SalesConversationGuidance | None
     already_discussed_service_ids: frozenset[str] = frozenset()
+    business_conversation: object | None = None
 
     def __post_init__(self) -> None:
         playbooks = tuple(self.playbooks)
@@ -297,6 +298,10 @@ class SalesPlaybookInput:
         if any(not _ID.fullmatch(item) for item in self.eligible_service_ids):
             raise ValueError("eligible service ids must be normalized")
         object.__setattr__(self, "playbooks", playbooks)
+        if self.business_conversation is not None:
+            from app.conversation.business_conversation.contracts import BusinessConversationSnapshot
+            if not isinstance(self.business_conversation, BusinessConversationSnapshot):
+                raise TypeError("business conversation has an invalid type")
 
 
 @dataclass(frozen=True)

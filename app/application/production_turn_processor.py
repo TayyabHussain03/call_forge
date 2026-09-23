@@ -83,6 +83,13 @@ from app.conversation.sales_playbook.contracts import (
     ServicePlaybook,
 )
 from app.conversation.sales_playbook.engine import SalesPlaybookIntelligenceEngine
+from app.conversation.business_conversation.contracts import (
+    BusinessConversationEvidence,
+    BusinessConversationSnapshot,
+)
+from app.conversation.business_conversation.engine import (
+    BusinessConversationIntelligenceEngine,
+)
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -153,6 +160,10 @@ CognitionSignalProvider = Callable[
 PlaybookContextProvider = Callable[
     [CoordinatedUserTurn, LeanTurnContext], BusinessContext
 ]
+BusinessConversationEvidenceProvider = Callable[
+    [CoordinatedUserTurn, LeanTurnContext, FreeTextUnderstanding | None],
+    BusinessConversationEvidence | None,
+]
 
 
 class ProductionTurnProcessor(TurnProcessor):
@@ -207,6 +218,9 @@ class ProductionTurnProcessor(TurnProcessor):
         sales_playbook_engine: SalesPlaybookIntelligenceEngine | None = None,
         service_playbooks: tuple[ServicePlaybook, ...] = (),
         playbook_context_provider: PlaybookContextProvider | None = None,
+        business_conversation_engine: BusinessConversationIntelligenceEngine | None = None,
+        business_conversation_evidence_provider: BusinessConversationEvidenceProvider | None = None,
+        initial_business_conversation: BusinessConversationSnapshot | None = None,
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -266,6 +280,9 @@ class ProductionTurnProcessor(TurnProcessor):
         self._service_playbooks = tuple(service_playbooks)
         self._playbook_context = playbook_context_provider
         self._latest_playbook_guidance: OpportunityGuidance | None = None
+        self._business_conversation = initial_business_conversation or BusinessConversationSnapshot()
+        self._business_conversation_engine = business_conversation_engine or BusinessConversationIntelligenceEngine()
+        self._business_conversation_evidence = business_conversation_evidence_provider
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -324,6 +341,11 @@ class ProductionTurnProcessor(TurnProcessor):
     def playbook_guidance(self) -> OpportunityGuidance | None:
         """Return the latest advisory opportunity without service authority."""
         return self._latest_playbook_guidance
+
+    @property
+    def business_conversation(self) -> BusinessConversationSnapshot:
+        """Return call-scoped advisory understanding, never domain authority."""
+        return self._business_conversation
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -397,6 +419,14 @@ class ProductionTurnProcessor(TurnProcessor):
             )
             if understanding is not None:
                 language_profile = understanding.language_profile
+            if self._business_conversation_evidence is not None:
+                business_evidence = self._business_conversation_evidence(
+                    turn, preliminary_context, understanding
+                )
+                if business_evidence is not None:
+                    self._business_conversation = self._business_conversation_engine.update(
+                        self._business_conversation, business_evidence
+                    )
             if evidence is not None:
                 self._prospect_intelligence = self._prospect_updater.update(
                     self._prospect_intelligence, evidence
@@ -524,6 +554,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 service_answer_context=service_answer,
                 sales_guidance=sales_guidance,
                 playbook_guidance=playbook_guidance,
+                business_conversation=self._business_conversation,
             )
         )
         rendered = self._renderer.render(
@@ -678,6 +709,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 already_discussed_service_ids=frozenset(
                     lean_context.offered_service_ids
                 ),
+                business_conversation=self._business_conversation,
             )
         )
 
