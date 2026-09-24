@@ -288,6 +288,7 @@ class SalesPlaybookInput:
     business_conversation: object | None = None
     business_diagnostic: object | None = None
     conversation_priority: object | None = None
+    qualification: object | None = None
 
     def __post_init__(self) -> None:
         playbooks = tuple(self.playbooks)
@@ -312,6 +313,9 @@ class SalesPlaybookInput:
             from app.conversation.conversation_steering.contracts import ConversationPrioritySnapshot
             if not isinstance(self.conversation_priority, ConversationPrioritySnapshot):
                 raise TypeError("conversation priority has an invalid type")
+        if self.qualification is not None:
+            from app.conversation.qualification.contracts import QualificationSnapshot
+            if not isinstance(self.qualification, QualificationSnapshot): raise TypeError("qualification has an invalid type")
 
 
 @dataclass(frozen=True)

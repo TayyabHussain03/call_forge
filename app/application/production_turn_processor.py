@@ -100,6 +100,8 @@ from app.conversation.conversation_steering.contracts import (
     ConversationSteeringInput,
 )
 from app.conversation.conversation_steering.engine import ConversationSteeringEngine
+from app.conversation.qualification.contracts import QualificationConfiguration, QualificationEvidence, QualificationSnapshot
+from app.conversation.qualification.engine import ProgressiveQualificationEngine
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -233,6 +235,8 @@ class ProductionTurnProcessor(TurnProcessor):
         initial_business_conversation: BusinessConversationSnapshot | None = None,
         business_diagnostic_engine: BusinessDiagnosticEngine | None = None,
         conversation_steering_engine: ConversationSteeringEngine | None = None,
+        qualification_configuration: QualificationConfiguration | None = None,
+        qualification_evidence_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], QualificationEvidence | None] | None = None,
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -299,6 +303,10 @@ class ProductionTurnProcessor(TurnProcessor):
         self._latest_business_diagnostic: BusinessDiagnosticSnapshot | None = None
         self._conversation_steering = conversation_steering_engine or ConversationSteeringEngine()
         self._latest_conversation_priority: ConversationPrioritySnapshot | None = None
+        self._qualification_configuration = qualification_configuration
+        self._qualification_evidence = qualification_evidence_provider
+        self._qualification_engine = ProgressiveQualificationEngine()
+        self._qualification: QualificationSnapshot | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -372,6 +380,10 @@ class ProductionTurnProcessor(TurnProcessor):
     def conversation_priority(self) -> ConversationPrioritySnapshot | None:
         """Return latest advisory discovery priority without decision authority."""
         return self._latest_conversation_priority
+
+    @property
+    def qualification(self) -> QualificationSnapshot | None:
+        return self._qualification
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -560,6 +572,10 @@ class ProductionTurnProcessor(TurnProcessor):
                 self._latest_conversation_priority,
             )
         ) if diagnostic is not None else None
+        if priority == TrustedPriorityOutcome.NONE and self._qualification_configuration and self._qualification_evidence:
+            qualification_evidence = self._qualification_evidence(turn, lean_context)
+            if qualification_evidence is not None:
+                self._qualification = self._qualification_engine.update(self._qualification_configuration, qualification_evidence, self._qualification)
         playbook_guidance = self._playbook_opportunity_guidance(
             turn,
             lean_context,
@@ -599,6 +615,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 business_conversation=self._business_conversation,
                 business_diagnostic=diagnostic,
                 conversation_priority=steering,
+                qualification=self._qualification,
             )
         )
         rendered = self._renderer.render(
@@ -760,6 +777,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 business_conversation=self._business_conversation,
                 business_diagnostic=diagnostic,
                 conversation_priority=steering,
+                qualification=self._qualification,
             )
         )
 

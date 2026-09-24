@@ -191,6 +191,7 @@ class ResponsePlanningInput:
     business_conversation: object | None = None
     business_diagnostic: object | None = None
     conversation_priority: object | None = None
+    qualification: object | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -208,6 +209,7 @@ class ResponsePlanningInput:
         _validate_business_conversation(self.business_conversation)
         _validate_business_diagnostic(self.business_diagnostic)
         _validate_conversation_priority(self.conversation_priority)
+        _validate_qualification(self.qualification)
 
 
 @dataclass(frozen=True)
@@ -234,6 +236,7 @@ class ResponsePlan:
     business_conversation: object | None = None
     business_diagnostic: object | None = None
     conversation_priority: object | None = None
+    qualification: object | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)
@@ -245,6 +248,7 @@ class ResponsePlan:
         _validate_business_conversation(self.business_conversation)
         _validate_business_diagnostic(self.business_diagnostic)
         _validate_conversation_priority(self.conversation_priority)
+        _validate_qualification(self.qualification)
 
 
 def _validate_language_profile(value: object) -> None:
@@ -312,3 +316,8 @@ def _validate_conversation_priority(value: object) -> None:
     from app.conversation.conversation_steering.contracts import ConversationPrioritySnapshot
     if not isinstance(value, ConversationPrioritySnapshot):
         raise TypeError("conversation priority has an invalid type")
+
+def _validate_qualification(value: object) -> None:
+    if value is None: return
+    from app.conversation.qualification.contracts import QualificationSnapshot
+    if not isinstance(value, QualificationSnapshot): raise TypeError("qualification has an invalid type")

@@ -357,6 +357,7 @@ class ResponsePlanner:
             business_conversation=planning_input.business_conversation,
             business_diagnostic=planning_input.business_diagnostic,
             conversation_priority=planning_input.conversation_priority,
+            qualification=planning_input.qualification,
         )
 
 
