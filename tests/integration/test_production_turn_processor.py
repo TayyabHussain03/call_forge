@@ -87,6 +87,7 @@ from app.conversation.business_conversation.contracts import (
     ObservedBusinessFact,
 )
 from app.conversation.business_diagnostic.contracts import DiagnosticFocus
+from app.conversation.conversation_steering.contracts import DiagnosticPriority
 from app.conversation.strategy.contracts import (
     ConversationMode,
     ConversationStrategyInput,
@@ -1269,3 +1270,6 @@ def test_processor_carries_bci_advice_without_changing_authoritative_response() 
     assert processor.business_diagnostic is not None
     assert processor.business_diagnostic.diagnostic_focus == DiagnosticFocus.WORKFLOW
     assert result.turn_output.response_plan.business_diagnostic == processor.business_diagnostic
+    assert processor.conversation_priority is not None
+    assert processor.conversation_priority.current_priority == DiagnosticPriority.WORKFLOW
+    assert result.turn_output.response_plan.conversation_priority == processor.conversation_priority

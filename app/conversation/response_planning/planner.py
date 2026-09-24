@@ -356,6 +356,7 @@ class ResponsePlanner:
             playbook_guidance=planning_input.playbook_guidance,
             business_conversation=planning_input.business_conversation,
             business_diagnostic=planning_input.business_diagnostic,
+            conversation_priority=planning_input.conversation_priority,
         )
 
 

@@ -95,6 +95,11 @@ from app.conversation.business_diagnostic.contracts import (
     BusinessDiagnosticSnapshot,
 )
 from app.conversation.business_diagnostic.engine import BusinessDiagnosticEngine
+from app.conversation.conversation_steering.contracts import (
+    ConversationPrioritySnapshot,
+    ConversationSteeringInput,
+)
+from app.conversation.conversation_steering.engine import ConversationSteeringEngine
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -227,6 +232,7 @@ class ProductionTurnProcessor(TurnProcessor):
         business_conversation_evidence_provider: BusinessConversationEvidenceProvider | None = None,
         initial_business_conversation: BusinessConversationSnapshot | None = None,
         business_diagnostic_engine: BusinessDiagnosticEngine | None = None,
+        conversation_steering_engine: ConversationSteeringEngine | None = None,
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -291,6 +297,8 @@ class ProductionTurnProcessor(TurnProcessor):
         self._business_conversation_evidence = business_conversation_evidence_provider
         self._business_diagnostic = business_diagnostic_engine or BusinessDiagnosticEngine()
         self._latest_business_diagnostic: BusinessDiagnosticSnapshot | None = None
+        self._conversation_steering = conversation_steering_engine or ConversationSteeringEngine()
+        self._latest_conversation_priority: ConversationPrioritySnapshot | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -359,6 +367,11 @@ class ProductionTurnProcessor(TurnProcessor):
     def business_diagnostic(self) -> BusinessDiagnosticSnapshot | None:
         """Return latest non-commercial diagnostic without execution authority."""
         return self._latest_business_diagnostic
+
+    @property
+    def conversation_priority(self) -> ConversationPrioritySnapshot | None:
+        """Return latest advisory discovery priority without decision authority."""
+        return self._latest_conversation_priority
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -540,12 +553,20 @@ class ProductionTurnProcessor(TurnProcessor):
                 lean_context.strategy,
             )
         ) if priority == TrustedPriorityOutcome.NONE else None
+        steering = self._conversation_steering.steer(
+            ConversationSteeringInput(
+                self._business_conversation, diagnostic, lean_context.prospect,
+                lean_context.strategy, self._orchestrator.current_state,
+                self._latest_conversation_priority,
+            )
+        ) if diagnostic is not None else None
         playbook_guidance = self._playbook_opportunity_guidance(
             turn,
             lean_context,
             consultative,
             sales_guidance,
             diagnostic,
+            steering,
             priority,
         )
         if escalation is not None and escalation.evidence_ids:
@@ -577,6 +598,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 playbook_guidance=playbook_guidance,
                 business_conversation=self._business_conversation,
                 business_diagnostic=diagnostic,
+                conversation_priority=steering,
             )
         )
         rendered = self._renderer.render(
@@ -612,6 +634,7 @@ class ProductionTurnProcessor(TurnProcessor):
         self._latest_sales_guidance = sales_guidance
         self._latest_playbook_guidance = playbook_guidance
         self._latest_business_diagnostic = diagnostic
+        self._latest_conversation_priority = steering
         self._recent_turns = (
             *self._recent_turns,
             RecentTurn(turn.turn_id, TurnSpeaker.USER, turn.utterance[:300]),
@@ -710,6 +733,7 @@ class ProductionTurnProcessor(TurnProcessor):
         decision: ConsultativeConversationDecision | None,
         sales_guidance: SalesConversationGuidance | None,
         diagnostic: BusinessDiagnosticSnapshot | None,
+        steering: ConversationPrioritySnapshot | None,
         priority: TrustedPriorityOutcome,
     ) -> OpportunityGuidance | None:
         """Evaluate structured playbooks only on the normal advisory path."""
@@ -735,6 +759,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 ),
                 business_conversation=self._business_conversation,
                 business_diagnostic=diagnostic,
+                conversation_priority=steering,
             )
         )
 

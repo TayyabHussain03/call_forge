@@ -287,6 +287,7 @@ class SalesPlaybookInput:
     already_discussed_service_ids: frozenset[str] = frozenset()
     business_conversation: object | None = None
     business_diagnostic: object | None = None
+    conversation_priority: object | None = None
 
     def __post_init__(self) -> None:
         playbooks = tuple(self.playbooks)
@@ -307,6 +308,10 @@ class SalesPlaybookInput:
             from app.conversation.business_diagnostic.contracts import BusinessDiagnosticSnapshot
             if not isinstance(self.business_diagnostic, BusinessDiagnosticSnapshot):
                 raise TypeError("business diagnostic has an invalid type")
+        if self.conversation_priority is not None:
+            from app.conversation.conversation_steering.contracts import ConversationPrioritySnapshot
+            if not isinstance(self.conversation_priority, ConversationPrioritySnapshot):
+                raise TypeError("conversation priority has an invalid type")
 
 
 @dataclass(frozen=True)
