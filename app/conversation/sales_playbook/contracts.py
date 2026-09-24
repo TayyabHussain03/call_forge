@@ -289,6 +289,7 @@ class SalesPlaybookInput:
     business_diagnostic: object | None = None
     conversation_priority: object | None = None
     qualification: object | None = None
+    business_memory: object | None = None
 
     def __post_init__(self) -> None:
         playbooks = tuple(self.playbooks)
@@ -316,6 +317,9 @@ class SalesPlaybookInput:
         if self.qualification is not None:
             from app.conversation.qualification.contracts import QualificationSnapshot
             if not isinstance(self.qualification, QualificationSnapshot): raise TypeError("qualification has an invalid type")
+        if self.business_memory is not None:
+            from app.conversation.business_memory.contracts import BusinessMentalModelSnapshot
+            if not isinstance(self.business_memory, BusinessMentalModelSnapshot): raise TypeError("business memory has an invalid type")
 
 
 @dataclass(frozen=True)

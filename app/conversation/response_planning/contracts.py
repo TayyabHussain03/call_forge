@@ -192,6 +192,7 @@ class ResponsePlanningInput:
     business_diagnostic: object | None = None
     conversation_priority: object | None = None
     qualification: object | None = None
+    business_memory: object | None = None
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -210,6 +211,7 @@ class ResponsePlanningInput:
         _validate_business_diagnostic(self.business_diagnostic)
         _validate_conversation_priority(self.conversation_priority)
         _validate_qualification(self.qualification)
+        _validate_business_memory(self.business_memory)
 
 
 @dataclass(frozen=True)
@@ -237,6 +239,7 @@ class ResponsePlan:
     business_diagnostic: object | None = None
     conversation_priority: object | None = None
     qualification: object | None = None
+    business_memory: object | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)
@@ -249,6 +252,7 @@ class ResponsePlan:
         _validate_business_diagnostic(self.business_diagnostic)
         _validate_conversation_priority(self.conversation_priority)
         _validate_qualification(self.qualification)
+        _validate_business_memory(self.business_memory)
 
 
 def _validate_language_profile(value: object) -> None:
@@ -321,3 +325,8 @@ def _validate_qualification(value: object) -> None:
     if value is None: return
     from app.conversation.qualification.contracts import QualificationSnapshot
     if not isinstance(value, QualificationSnapshot): raise TypeError("qualification has an invalid type")
+
+def _validate_business_memory(value: object) -> None:
+    if value is None: return
+    from app.conversation.business_memory.contracts import BusinessMentalModelSnapshot
+    if not isinstance(value, BusinessMentalModelSnapshot): raise TypeError("business memory has an invalid type")

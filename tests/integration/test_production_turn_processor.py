@@ -87,6 +87,7 @@ from app.conversation.business_conversation.contracts import (
     ObservedBusinessFact,
 )
 from app.conversation.business_diagnostic.contracts import DiagnosticFocus
+from app.conversation.business_memory.contracts import BusinessMemoryScope, GraphNodeType
 from app.conversation.conversation_steering.contracts import DiagnosticPriority
 from app.conversation.strategy.contracts import (
     ConversationMode,
@@ -181,6 +182,7 @@ def _processor(
     service_playbooks: tuple[ServicePlaybook, ...] = (),
     playbook_context_provider=None,  # type: ignore[no-untyped-def]
     business_conversation_evidence_provider=None,  # type: ignore[no-untyped-def]
+    business_memory_scope=None,  # type: ignore[no-untyped-def]
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -231,6 +233,7 @@ def _processor(
         service_playbooks=service_playbooks,
         playbook_context_provider=playbook_context_provider,
         business_conversation_evidence_provider=business_conversation_evidence_provider,
+        business_memory_scope=business_memory_scope,
     )
 
 
@@ -1258,6 +1261,7 @@ def test_processor_carries_bci_advice_without_changing_authoritative_response() 
                 )
             )
         ),
+        business_memory_scope=BusinessMemoryScope("tenant", "business", "campaign"),
     )
     result = TurnCoordinator("call", processor).handle(_final())
     baseline_result = TurnCoordinator("call", baseline).handle(_final())
@@ -1273,3 +1277,6 @@ def test_processor_carries_bci_advice_without_changing_authoritative_response() 
     assert processor.conversation_priority is not None
     assert processor.conversation_priority.current_priority == DiagnosticPriority.WORKFLOW
     assert result.turn_output.response_plan.conversation_priority == processor.conversation_priority
+    assert processor.business_memory is not None
+    assert any(node.node_type == GraphNodeType.WORKFLOW for node in processor.business_memory.nodes)
+    assert result.turn_output.response_plan.business_memory == processor.business_memory

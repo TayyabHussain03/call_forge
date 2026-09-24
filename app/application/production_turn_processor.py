@@ -102,6 +102,8 @@ from app.conversation.conversation_steering.contracts import (
 from app.conversation.conversation_steering.engine import ConversationSteeringEngine
 from app.conversation.qualification.contracts import QualificationConfiguration, QualificationEvidence, QualificationSnapshot
 from app.conversation.qualification.engine import ProgressiveQualificationEngine
+from app.conversation.business_memory.contracts import BusinessMemoryScope, BusinessMentalModelSnapshot
+from app.conversation.business_memory.engine import BusinessMentalModelEngine
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -237,6 +239,7 @@ class ProductionTurnProcessor(TurnProcessor):
         conversation_steering_engine: ConversationSteeringEngine | None = None,
         qualification_configuration: QualificationConfiguration | None = None,
         qualification_evidence_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], QualificationEvidence | None] | None = None,
+        business_memory_scope: BusinessMemoryScope | None = None,
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -307,6 +310,9 @@ class ProductionTurnProcessor(TurnProcessor):
         self._qualification_evidence = qualification_evidence_provider
         self._qualification_engine = ProgressiveQualificationEngine()
         self._qualification: QualificationSnapshot | None = None
+        self._business_memory_scope = business_memory_scope
+        self._business_memory_engine = BusinessMentalModelEngine()
+        self._business_memory: BusinessMentalModelSnapshot | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -384,6 +390,10 @@ class ProductionTurnProcessor(TurnProcessor):
     @property
     def qualification(self) -> QualificationSnapshot | None:
         return self._qualification
+
+    @property
+    def business_memory(self) -> BusinessMentalModelSnapshot | None:
+        return self._business_memory
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -576,6 +586,12 @@ class ProductionTurnProcessor(TurnProcessor):
             qualification_evidence = self._qualification_evidence(turn, lean_context)
             if qualification_evidence is not None:
                 self._qualification = self._qualification_engine.update(self._qualification_configuration, qualification_evidence, self._qualification)
+        if diagnostic is not None and self._business_memory_scope is not None:
+            self._business_memory = self._business_memory_engine.project(
+                self._business_memory_scope, self._business_conversation,
+                self._prospect_intelligence, self._qualification, diagnostic,
+                self._business_memory,
+            )
         playbook_guidance = self._playbook_opportunity_guidance(
             turn,
             lean_context,
@@ -616,6 +632,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 business_diagnostic=diagnostic,
                 conversation_priority=steering,
                 qualification=self._qualification,
+                business_memory=self._business_memory,
             )
         )
         rendered = self._renderer.render(
@@ -778,6 +795,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 business_diagnostic=diagnostic,
                 conversation_priority=steering,
                 qualification=self._qualification,
+                business_memory=self._business_memory,
             )
         )
 
