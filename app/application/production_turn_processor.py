@@ -108,6 +108,8 @@ from app.knowledge.retrieval_planning.contracts import KnowledgeNeed, KnowledgeR
 from app.knowledge.retrieval_planning.planner import KnowledgeRetrievalPlanner
 from app.knowledge.hybrid_retrieval.contracts import RetrievalCandidateSet
 from app.knowledge.hybrid_retrieval.engine import HybridRetrievalEngine
+from app.knowledge.evidence_validation.contracts import CommercialDisclosurePolicy, EvidenceValidationPolicy, EvidenceValidationResult
+from app.knowledge.evidence_validation.engine import EvidenceValidationEngine
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -247,6 +249,8 @@ class ProductionTurnProcessor(TurnProcessor):
         knowledge_retrieval_policy: KnowledgeRetrievalPolicy | None = None,
         knowledge_need_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], tuple[KnowledgeNeed, ...]] | None = None,
         hybrid_retrieval_engine: HybridRetrievalEngine | None = None,
+        evidence_validation_policy: EvidenceValidationPolicy | None = None,
+        commercial_disclosure_policy: CommercialDisclosurePolicy = CommercialDisclosurePolicy(),
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -326,6 +330,10 @@ class ProductionTurnProcessor(TurnProcessor):
         self._retrieval_plan: RetrievalPlan | None = None
         self._hybrid_retrieval = hybrid_retrieval_engine
         self._retrieval_candidates: RetrievalCandidateSet | None = None
+        self._evidence_validation_policy = evidence_validation_policy
+        self._commercial_disclosure_policy = commercial_disclosure_policy
+        self._evidence_validator = EvidenceValidationEngine()
+        self._evidence_validation: EvidenceValidationResult | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -416,6 +424,11 @@ class ProductionTurnProcessor(TurnProcessor):
     def retrieval_candidates(self) -> RetrievalCandidateSet | None:
         """Return unapproved candidates; never expose them as response evidence."""
         return self._retrieval_candidates
+
+    @property
+    def evidence_validation(self) -> EvidenceValidationResult | None:
+        """Return validation output; no evidence is consumed downstream yet."""
+        return self._evidence_validation
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -628,6 +641,12 @@ class ProductionTurnProcessor(TurnProcessor):
                 self._retrieval_candidates = self._hybrid_retrieval.retrieve(
                     self._retrieval_plan
                 )
+                if self._evidence_validation_policy is not None:
+                    self._evidence_validation = self._evidence_validator.validate(
+                        self._retrieval_candidates,
+                        self._evidence_validation_policy,
+                        self._commercial_disclosure_policy,
+                    )
         playbook_guidance = self._playbook_opportunity_guidance(
             turn,
             lean_context,

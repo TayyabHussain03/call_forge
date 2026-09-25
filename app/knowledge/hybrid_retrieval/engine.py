@@ -87,7 +87,9 @@ def _fuse(lexical,semantic,chunks,eligible,plan,config,vector,lexical_provider,v
         source=RetrievalSource.HYBRID if cid in lr and cid in sr else RetrievalSource.LEXICAL if cid in lr else RetrievalSource.SEMANTIC
         text=_bound_text(chunk.text,config)
         provenance=CandidateProvenance(item.snapshot_id,chunk.checksum,(config.vector_index_version if cid in sr else config.lexical_index_version) or "",getattr(lexical_provider,"name",None) if cid in lr else None,getattr(vector_provider,"name",None) if cid in sr else None,vector.provider_name if vector and cid in sr else None,vector.model_id if vector and cid in sr else None,vector.dimension if vector and cid in sr else None,vector.embedding_version if vector and cid in sr else None)
-        result.append(RetrievalCandidate(chunk.document_id,chunk.version_id,chunk.document_version,cid,chunk.section_title,chunk.language,chunk.purpose,order,priority,metadata,source,lr.get(cid),sr.get(cid),score,len(result)+1,text,CandidateContentStatus.UNAPPROVED,provenance))
+        validation=CandidateValidationMetadata(item.tenant_id,item.business_id,item.campaign_id,item.snapshot.knowledge_base_id,item.service_id,item.document_status,item.active_version)
+        claims=dict(item.claims_by_chunk).get(cid,())
+        result.append(RetrievalCandidate(chunk.document_id,chunk.version_id,chunk.document_version,cid,chunk.section_title,chunk.language,chunk.purpose,order,priority,metadata,source,lr.get(cid),sr.get(cid),score,len(result)+1,text,CandidateContentStatus.UNAPPROVED,provenance,validation,claims))
     return tuple(result)
 
 def _bound_text(text,config):

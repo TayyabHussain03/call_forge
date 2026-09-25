@@ -6,6 +6,7 @@ from typing import Protocol
 from app.knowledge.contracts import DocumentStatus, KnowledgePurpose
 from app.knowledge.processing.contracts import DocumentLanguage, KnowledgeSnapshot, ProcessingStatus
 from app.knowledge.retrieval_planning.contracts import KnowledgeConcept, RetrievalFilters, RetrievalPlan
+from app.knowledge.evidence_claims import EvidenceClaim
 
 class RetrievalMode(str,Enum): LEXICAL="lexical"; SEMANTIC="semantic"; HYBRID="hybrid"
 class RetrievalSource(str,Enum): LEXICAL="lexical"; SEMANTIC="semantic"; HYBRID="hybrid"
@@ -37,8 +38,15 @@ class IndexedKnowledgeSnapshot:
     tenant_id: str; business_id: str; campaign_id: str; service_id: str|None
     document_status: DocumentStatus; active_version: bool; document_priority: int
     index_version: str; snapshot_id: str; snapshot: KnowledgeSnapshot
+    claims_by_chunk: tuple[tuple[str,tuple[EvidenceClaim,...]],...] = ()
     def __post_init__(self):
         if self.snapshot.status != ProcessingStatus.READY_FOR_INDEXING: raise ValueError("only ready snapshots may be indexed")
+        if len({chunk_id for chunk_id,_ in self.claims_by_chunk})!=len(self.claims_by_chunk): raise ValueError("chunk claim metadata must be unique")
+
+@dataclass(frozen=True)
+class CandidateValidationMetadata:
+    tenant_id:str; business_id:str; campaign_id:str; knowledge_base_id:str
+    service_id:str|None; document_status:DocumentStatus; active_version:bool
 
 @dataclass(frozen=True)
 class IndexQuery:
@@ -80,6 +88,8 @@ class RetrievalCandidate:
     chunk_order: int; document_priority: int; metadata_match: int
     source: RetrievalSource; lexical_rank: int|None; semantic_rank: int|None; rrf_score: float; rrf_rank: int
     text: str; content_status: CandidateContentStatus; provenance: CandidateProvenance
+    validation: CandidateValidationMetadata|None=None
+    claims: tuple[EvidenceClaim,...]=()
 
 @dataclass(frozen=True)
 class RetrievalStatistics:

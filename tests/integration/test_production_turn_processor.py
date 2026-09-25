@@ -97,6 +97,9 @@ from app.knowledge.hybrid_retrieval.contracts import (
     CandidateSetStatus,
 )
 from app.knowledge.hybrid_retrieval.engine import HybridRetrievalEngine
+from app.knowledge.evidence_validation.contracts import EvidenceValidationPolicy
+from app.knowledge.contracts import KnowledgePurpose
+from app.knowledge.processing.contracts import DocumentLanguage
 from app.conversation.conversation_steering.contracts import DiagnosticPriority
 from app.conversation.strategy.contracts import (
     ConversationMode,
@@ -195,6 +198,7 @@ def _processor(
     knowledge_retrieval_policy=None,  # type: ignore[no-untyped-def]
     knowledge_need_provider=None,  # type: ignore[no-untyped-def]
     hybrid_retrieval_engine=None,  # type: ignore[no-untyped-def]
+    evidence_validation_policy=None,  # type: ignore[no-untyped-def]
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -249,6 +253,7 @@ def _processor(
         knowledge_retrieval_policy=knowledge_retrieval_policy,
         knowledge_need_provider=knowledge_need_provider,
         hybrid_retrieval_engine=hybrid_retrieval_engine,
+        evidence_validation_policy=evidence_validation_policy,
     )
 
 
@@ -1323,6 +1328,11 @@ def test_processor_carries_retrieval_plan_without_executing_retrieval() -> None:
             ),
         ),
         hybrid_retrieval_engine=retrieval,
+        evidence_validation_policy=EvidenceValidationPolicy(
+            "tenant", "business", "campaign", "kb",
+            frozenset(), frozenset({DocumentLanguage.ENGLISH}),
+            frozenset({KnowledgePurpose.FAQ}), frozenset({"index-v1"}),
+        ),
     )
     result = TurnCoordinator("call", processor).handle(_final())
     baseline_result = TurnCoordinator("call", baseline).handle(_final())
@@ -1331,6 +1341,9 @@ def test_processor_carries_retrieval_plan_without_executing_retrieval() -> None:
     assert processor.retrieval_plan.requirement == RetrievalRequirement.REQUIRED
     assert processor.retrieval_candidates is not None
     assert processor.retrieval_candidates.status == CandidateSetStatus.NO_CANDIDATES
+    assert processor.evidence_validation is not None
+    assert not processor.evidence_validation.approved.items
     assert result.turn_output.response_plan.retrieval_plan == processor.retrieval_plan
     assert not hasattr(result.turn_output.response_plan, "retrieval_candidates")
+    assert not hasattr(result.turn_output.response_plan, "approved_evidence")
     assert result.turn_output.rendered_response == baseline_result.turn_output.rendered_response
