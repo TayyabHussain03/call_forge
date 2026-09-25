@@ -24,8 +24,8 @@ class Repo:
 class Lexical:
     name="lexical-test"
     def __init__(self,hits=(),error=None): self.hits=hits; self.error=error; self.tokenizer=None; self.calls=0
-    def search(self,query,tokenizer,limit):
-        self.calls+=1; self.tokenizer=tokenizer
+    def search(self,query,tokenizer,limit,timeout_ms):
+        self.calls+=1; self.tokenizer=tokenizer; self.timeout_ms=timeout_ms
         if self.error: raise self.error
         return self.hits
 class Embed:
@@ -37,8 +37,8 @@ class Embed:
 class Vector:
     name="vector-test"
     def __init__(self,hits=(),error=None): self.hits=hits; self.error=error; self.calls=0
-    def search(self,vector,eligible_chunk_ids,limit):
-        self.calls+=1
+    def search(self,vector,eligible_chunk_ids,limit,timeout_ms):
+        self.calls+=1; self.timeout_ms=timeout_ms
         if self.error: raise self.error
         return self.hits
 def _config(mode=RetrievalMode.HYBRID,**changes):
@@ -51,6 +51,7 @@ def test_lexical_only_calls_provider_and_honors_tokenizer():
     lex=Lexical((_hit("doc-c0"),)); engine=_engine(lex=lex,config=_config(RetrievalMode.LEXICAL))
     result=engine.retrieve(_plan())
     assert result.status==CandidateSetStatus.READY and lex.calls==1 and lex.tokenizer.stop_words==("the",)
+    assert lex.timeout_ms==1000 and result.trace.timeout_budget_ms==1000
     assert result.candidates[0].source==RetrievalSource.LEXICAL
 def test_semantic_only_retains_embedding_and_index_provenance():
     vec=Vector((_hit("doc-c0"),)); result=_engine(lex=None,vec=vec,embed=Embed(),config=_config(RetrievalMode.SEMANTIC)).retrieve(_plan())

@@ -60,12 +60,12 @@ class KnowledgeRepository(Protocol):
     def enumerate_snapshots(self, filters: RetrievalFilters) -> tuple[IndexedKnowledgeSnapshot,...]: ...
 class LexicalIndexProvider(Protocol):
     name: str
-    def search(self, query: IndexQuery, tokenizer: TokenizerConfiguration, limit: int) -> tuple[RankedChunk,...]: ...
+    def search(self, query: IndexQuery, tokenizer: TokenizerConfiguration, limit: int, timeout_ms: int) -> tuple[RankedChunk,...]: ...
 class EmbeddingProvider(Protocol):
     def embed(self, concept: KnowledgeConcept, configuration: EmbeddingConfiguration) -> EmbeddingVector: ...
 class VectorIndexProvider(Protocol):
     name: str
-    def search(self, vector: EmbeddingVector, eligible_chunk_ids: tuple[str,...], limit: int) -> tuple[RankedChunk,...]: ...
+    def search(self, vector: EmbeddingVector, eligible_chunk_ids: tuple[str,...], limit: int, timeout_ms: int) -> tuple[RankedChunk,...]: ...
 
 @dataclass(frozen=True)
 class CandidateProvenance:
@@ -88,7 +88,7 @@ class RetrievalStatistics:
 @dataclass(frozen=True)
 class RetrievalTrace:
     filters: RetrievalFilters; mode: RetrievalMode; lexical_health: BackendHealth; semantic_health: BackendHealth
-    fusion_strategy: str; lexical_provider: str|None; vector_provider: str|None; index_versions: tuple[str,...]
+    fusion_strategy: str; lexical_provider: str|None; vector_provider: str|None; index_versions: tuple[str,...]; timeout_budget_ms: int
 
 @dataclass(frozen=True)
 class RetrievalCandidateSet:

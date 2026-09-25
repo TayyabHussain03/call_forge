@@ -20,7 +20,7 @@ class HybridRetrievalEngine:
         if self._config.mode in {RetrievalMode.LEXICAL,RetrievalMode.HYBRID}:
             try:
                 if self._lexical is None: raise CorruptIndexError()
-                lexical_hits=self._lexical.search(query,self._config.tokenizer,plan.budget.max_chunks); _validate_hits(lexical_hits,chunks,self._config.lexical_index_version); lh=BackendHealth.HEALTHY
+                lexical_hits=self._lexical.search(query,self._config.tokenizer,plan.budget.max_chunks,plan.budget.max_retrieval_duration_ms); _validate_hits(lexical_hits,chunks,self._config.lexical_index_version); lh=BackendHealth.HEALTHY
             except RetrievalTimeout: lexical_hits=(); lh=BackendHealth.TIMED_OUT
             except CorruptIndexError: lexical_hits=(); lh=BackendHealth.CORRUPT
             except Exception: lexical_hits=(); lh=BackendHealth.FAILED
@@ -29,7 +29,7 @@ class HybridRetrievalEngine:
                 if self._embedding is None or self._vector is None or self._config.embedding is None: raise CorruptIndexError()
                 vector=self._embedding.embed(plan.concept,self._config.embedding)
                 if (vector.provider_name,vector.model_id,vector.dimension,vector.embedding_version)!=(self._config.embedding.provider_name,self._config.embedding.model_id,self._config.embedding.dimension,self._config.embedding.version): raise CorruptIndexError()
-                semantic_hits=self._vector.search(vector,query.eligible_chunk_ids,plan.budget.max_chunks); _validate_hits(semantic_hits,chunks,self._config.vector_index_version or ""); sh=BackendHealth.HEALTHY
+                semantic_hits=self._vector.search(vector,query.eligible_chunk_ids,plan.budget.max_chunks,plan.budget.max_retrieval_duration_ms); _validate_hits(semantic_hits,chunks,self._config.vector_index_version or ""); sh=BackendHealth.HEALTHY
             except RetrievalTimeout: semantic_hits=(); sh=BackendHealth.TIMED_OUT
             except CorruptIndexError: semantic_hits=(); sh=BackendHealth.CORRUPT
             except Exception: semantic_hits=(); sh=BackendHealth.FAILED
@@ -95,4 +95,4 @@ def _bound_text(text,config):
     return " ".join(words[:config.max_chunk_tokens])
 
 def _trace(plan,config,lh,sh,lexical,vector,eligible):
-    return RetrievalTrace(plan.filters,config.mode,lh,sh,"rrf",getattr(lexical,"name",None),getattr(vector,"name",None),tuple(sorted({item.index_version for item in eligible})))
+    return RetrievalTrace(plan.filters,config.mode,lh,sh,"rrf",getattr(lexical,"name",None),getattr(vector,"name",None),tuple(sorted({item.index_version for item in eligible})),plan.budget.max_retrieval_duration_ms)
