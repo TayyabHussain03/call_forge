@@ -104,6 +104,8 @@ from app.conversation.qualification.contracts import QualificationConfiguration,
 from app.conversation.qualification.engine import ProgressiveQualificationEngine
 from app.conversation.business_memory.contracts import BusinessMemoryScope, BusinessMentalModelSnapshot
 from app.conversation.business_memory.engine import BusinessMentalModelEngine
+from app.knowledge.retrieval_planning.contracts import KnowledgeNeed, KnowledgeRetrievalPolicy, RetrievalPlan, RetrievalPlanningContext
+from app.knowledge.retrieval_planning.planner import KnowledgeRetrievalPlanner
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -240,6 +242,8 @@ class ProductionTurnProcessor(TurnProcessor):
         qualification_configuration: QualificationConfiguration | None = None,
         qualification_evidence_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], QualificationEvidence | None] | None = None,
         business_memory_scope: BusinessMemoryScope | None = None,
+        knowledge_retrieval_policy: KnowledgeRetrievalPolicy | None = None,
+        knowledge_need_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], tuple[KnowledgeNeed, ...]] | None = None,
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -313,6 +317,10 @@ class ProductionTurnProcessor(TurnProcessor):
         self._business_memory_scope = business_memory_scope
         self._business_memory_engine = BusinessMentalModelEngine()
         self._business_memory: BusinessMentalModelSnapshot | None = None
+        self._knowledge_retrieval_policy = knowledge_retrieval_policy
+        self._knowledge_need = knowledge_need_provider
+        self._knowledge_retrieval_planner = KnowledgeRetrievalPlanner()
+        self._retrieval_plan: RetrievalPlan | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -394,6 +402,10 @@ class ProductionTurnProcessor(TurnProcessor):
     @property
     def business_memory(self) -> BusinessMentalModelSnapshot | None:
         return self._business_memory
+
+    @property
+    def retrieval_plan(self) -> RetrievalPlan | None:
+        return self._retrieval_plan
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -592,6 +604,16 @@ class ProductionTurnProcessor(TurnProcessor):
                 self._prospect_intelligence, self._qualification, diagnostic,
                 self._business_memory,
             )
+        if priority == TrustedPriorityOutcome.NONE and self._knowledge_retrieval_policy is not None:
+            needs = self._knowledge_need(turn, lean_context) if self._knowledge_need else ()
+            policy = self._knowledge_retrieval_policy
+            self._retrieval_plan = self._knowledge_retrieval_planner.plan(
+                needs, policy, tenant_id=policy.tenant_id,
+                business_id=policy.business_id, campaign_id=policy.campaign_id,
+                context=RetrievalPlanningContext(self._business_memory, diagnostic, self._qualification, steering),
+                preferred_language=language_profile.preferred_response_language if language_profile else None,
+                fallback_language=language_profile.primary_language if language_profile else None,
+            )
         playbook_guidance = self._playbook_opportunity_guidance(
             turn,
             lean_context,
@@ -633,6 +655,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 conversation_priority=steering,
                 qualification=self._qualification,
                 business_memory=self._business_memory,
+                retrieval_plan=self._retrieval_plan,
             )
         )
         rendered = self._renderer.render(
@@ -796,6 +819,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 conversation_priority=steering,
                 qualification=self._qualification,
                 business_memory=self._business_memory,
+                retrieval_plan=self._retrieval_plan,
             )
         )
 

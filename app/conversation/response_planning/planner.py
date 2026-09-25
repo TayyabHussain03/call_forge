@@ -359,6 +359,7 @@ class ResponsePlanner:
             conversation_priority=planning_input.conversation_priority,
             qualification=planning_input.qualification,
             business_memory=planning_input.business_memory,
+            retrieval_plan=planning_input.retrieval_plan,
         )
 
 

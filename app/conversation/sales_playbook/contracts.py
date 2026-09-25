@@ -290,6 +290,7 @@ class SalesPlaybookInput:
     conversation_priority: object | None = None
     qualification: object | None = None
     business_memory: object | None = None
+    retrieval_plan: object | None = None
 
     def __post_init__(self) -> None:
         playbooks = tuple(self.playbooks)
@@ -320,6 +321,9 @@ class SalesPlaybookInput:
         if self.business_memory is not None:
             from app.conversation.business_memory.contracts import BusinessMentalModelSnapshot
             if not isinstance(self.business_memory, BusinessMentalModelSnapshot): raise TypeError("business memory has an invalid type")
+        if self.retrieval_plan is not None:
+            from app.knowledge.retrieval_planning.contracts import RetrievalPlan
+            if not isinstance(self.retrieval_plan, RetrievalPlan): raise TypeError("retrieval plan has an invalid type")
 
 
 @dataclass(frozen=True)

@@ -88,6 +88,10 @@ from app.conversation.business_conversation.contracts import (
 )
 from app.conversation.business_diagnostic.contracts import DiagnosticFocus
 from app.conversation.business_memory.contracts import BusinessMemoryScope, GraphNodeType
+from app.knowledge.retrieval_planning.contracts import (
+    KnowledgeConcept, KnowledgeNeed, KnowledgeNeedKind, KnowledgeNeedSource,
+    KnowledgeRetrievalPolicy, RetrievalRequirement,
+)
 from app.conversation.conversation_steering.contracts import DiagnosticPriority
 from app.conversation.strategy.contracts import (
     ConversationMode,
@@ -183,6 +187,8 @@ def _processor(
     playbook_context_provider=None,  # type: ignore[no-untyped-def]
     business_conversation_evidence_provider=None,  # type: ignore[no-untyped-def]
     business_memory_scope=None,  # type: ignore[no-untyped-def]
+    knowledge_retrieval_policy=None,  # type: ignore[no-untyped-def]
+    knowledge_need_provider=None,  # type: ignore[no-untyped-def]
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -234,6 +240,8 @@ def _processor(
         playbook_context_provider=playbook_context_provider,
         business_conversation_evidence_provider=business_conversation_evidence_provider,
         business_memory_scope=business_memory_scope,
+        knowledge_retrieval_policy=knowledge_retrieval_policy,
+        knowledge_need_provider=knowledge_need_provider,
     )
 
 
@@ -1280,3 +1288,27 @@ def test_processor_carries_bci_advice_without_changing_authoritative_response() 
     assert processor.business_memory is not None
     assert any(node.node_type == GraphNodeType.WORKFLOW for node in processor.business_memory.nodes)
     assert result.turn_output.response_plan.business_memory == processor.business_memory
+
+
+def test_processor_carries_retrieval_plan_without_executing_retrieval() -> None:
+    baseline = _processor(MockReasoningProvider(default=_proposal()))
+    processor = _processor(
+        MockReasoningProvider(default=_proposal()),
+        knowledge_retrieval_policy=KnowledgeRetrievalPolicy(
+            "tenant", "business", "campaign", "kb"
+        ),
+        knowledge_need_provider=lambda turn, context: (
+            KnowledgeNeed(
+                "need-1", turn.turn_id, KnowledgeNeedSource.DIRECT_TYPED_REQUEST,
+                KnowledgeNeedKind.FAQ, KnowledgeConcept("website", "benefits"),
+                explicit_direct_request=True,
+            ),
+        ),
+    )
+    result = TurnCoordinator("call", processor).handle(_final())
+    baseline_result = TurnCoordinator("call", baseline).handle(_final())
+    assert result.turn_output is not None and baseline_result.turn_output is not None
+    assert processor.retrieval_plan is not None
+    assert processor.retrieval_plan.requirement == RetrievalRequirement.REQUIRED
+    assert result.turn_output.response_plan.retrieval_plan == processor.retrieval_plan
+    assert result.turn_output.rendered_response == baseline_result.turn_output.rendered_response
