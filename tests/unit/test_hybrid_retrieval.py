@@ -72,6 +72,15 @@ def test_scope_status_active_and_index_version_mismatches_are_excluded(change):
 def test_kb_purpose_language_and_service_filters_fail_closed():
     service_filters=RetrievalFilters("tenant","business","campaign","seo","kb",(KnowledgePurpose.CASE_STUDY,),preferred_language="ur")
     assert _engine(items=[_indexed(service_id="crm")],lex=Lexical()).retrieve(_plan(filters=service_filters)).status==CandidateSetStatus.NO_CANDIDATES
+def test_language_fallback_is_used_only_when_preferred_is_absent():
+    english=_indexed(snapshot_id="en",snapshot=_snapshot(doc="english",language=DocumentLanguage.ENGLISH))
+    urdu=_indexed(snapshot_id="ur",snapshot=_snapshot(doc="urdu",language=DocumentLanguage.URDU))
+    filters=RetrievalFilters("tenant","business","campaign",None,"kb",(KnowledgePurpose.SERVICE_KNOWLEDGE,),preferred_language="ur",fallback_language="en")
+    lex=Lexical((_hit("urdu-c0"),))
+    assert _engine(items=[english,urdu],lex=lex,config=_config(RetrievalMode.LEXICAL)).retrieve(_plan(filters=filters)).statistics.eligible_documents==1
+    fallback_lex=Lexical((_hit("english-c0"),))
+    result=_engine(items=[english],lex=fallback_lex,config=_config(RetrievalMode.LEXICAL)).retrieve(_plan(filters=filters))
+    assert result.statistics.eligible_documents==1 and result.candidates[0].document_id=="english"
 def test_backend_failure_degrades_and_both_failure_returns_empty():
     good=Lexical((_hit("doc-c0"),)); bad_vector=Vector(error=RuntimeError("down"))
     partial=_engine(lex=good,vec=bad_vector,embed=Embed()).retrieve(_plan())

@@ -43,6 +43,7 @@ class HybridRetrievalEngine:
 
 def _eligible(items,plan,config):
     result=[]
+    aliases={"en":"english","ur":"urdu","hi":"hindi","roman-urdu":"roman_urdu"}
     for item in items:
         if item.tenant_id!=plan.filters.tenant_id or item.business_id!=plan.filters.business_id or item.campaign_id!=plan.filters.campaign_id: continue
         if plan.filters.knowledge_base_id and item.snapshot.knowledge_base_id!=plan.filters.knowledge_base_id: continue
@@ -52,11 +53,14 @@ def _eligible(items,plan,config):
         if config.vector_index_version is not None: expected.add(config.vector_index_version)
         if item.index_version not in expected: continue
         if plan.filters.purposes and not any(chunk.purpose in plan.filters.purposes for chunk in item.snapshot.chunks): continue
-        aliases={"en":"english","ur":"urdu","hi":"hindi","roman-urdu":"roman_urdu"}
-        languages={aliases.get(lang,lang) for lang in (plan.filters.preferred_language,plan.filters.fallback_language) if lang}
-        if languages and item.snapshot.language.value not in languages: continue
         result.append(item)
-    return tuple(result)
+    preferred=aliases.get(plan.filters.preferred_language,plan.filters.preferred_language)
+    fallback=aliases.get(plan.filters.fallback_language,plan.filters.fallback_language)
+    if preferred:
+        preferred_items=tuple(item for item in result if item.snapshot.language.value==preferred)
+        if preferred_items: return preferred_items
+    if fallback: return tuple(item for item in result if item.snapshot.language.value==fallback)
+    return tuple(result) if not preferred else ()
 
 def _validate_hits(hits,chunks,index_version):
     seen=set()
