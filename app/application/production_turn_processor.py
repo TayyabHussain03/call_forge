@@ -106,6 +106,8 @@ from app.conversation.business_memory.contracts import BusinessMemoryScope, Busi
 from app.conversation.business_memory.engine import BusinessMentalModelEngine
 from app.knowledge.retrieval_planning.contracts import KnowledgeNeed, KnowledgeRetrievalPolicy, RetrievalPlan, RetrievalPlanningContext
 from app.knowledge.retrieval_planning.planner import KnowledgeRetrievalPlanner
+from app.knowledge.hybrid_retrieval.contracts import RetrievalCandidateSet
+from app.knowledge.hybrid_retrieval.engine import HybridRetrievalEngine
 from app.conversation.strategy.contracts import (
     ConversationStrategy,
     ConversationStrategyHint,
@@ -244,6 +246,7 @@ class ProductionTurnProcessor(TurnProcessor):
         business_memory_scope: BusinessMemoryScope | None = None,
         knowledge_retrieval_policy: KnowledgeRetrievalPolicy | None = None,
         knowledge_need_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], tuple[KnowledgeNeed, ...]] | None = None,
+        hybrid_retrieval_engine: HybridRetrievalEngine | None = None,
         active_knowledge_base_id: str | None = None,
     ) -> None:
         self._orchestrator = orchestrator
@@ -321,6 +324,8 @@ class ProductionTurnProcessor(TurnProcessor):
         self._knowledge_need = knowledge_need_provider
         self._knowledge_retrieval_planner = KnowledgeRetrievalPlanner()
         self._retrieval_plan: RetrievalPlan | None = None
+        self._hybrid_retrieval = hybrid_retrieval_engine
+        self._retrieval_candidates: RetrievalCandidateSet | None = None
         self._recent_question_concepts: tuple[ProblemField, ...] = ()
         if active_knowledge_base_id is not None and (
             not active_knowledge_base_id.strip()
@@ -406,6 +411,11 @@ class ProductionTurnProcessor(TurnProcessor):
     @property
     def retrieval_plan(self) -> RetrievalPlan | None:
         return self._retrieval_plan
+
+    @property
+    def retrieval_candidates(self) -> RetrievalCandidateSet | None:
+        """Return unapproved candidates; never expose them as response evidence."""
+        return self._retrieval_candidates
 
     @property
     def strategy_buffer(self) -> StrategyBufferSnapshot:
@@ -614,6 +624,10 @@ class ProductionTurnProcessor(TurnProcessor):
                 preferred_language=language_profile.preferred_response_language if language_profile else None,
                 fallback_language=language_profile.primary_language if language_profile else None,
             )
+            if self._hybrid_retrieval is not None:
+                self._retrieval_candidates = self._hybrid_retrieval.retrieve(
+                    self._retrieval_plan
+                )
         playbook_guidance = self._playbook_opportunity_guidance(
             turn,
             lean_context,

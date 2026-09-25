@@ -92,6 +92,11 @@ from app.knowledge.retrieval_planning.contracts import (
     KnowledgeConcept, KnowledgeNeed, KnowledgeNeedKind, KnowledgeNeedSource,
     KnowledgeRetrievalPolicy, RetrievalRequirement,
 )
+from app.knowledge.hybrid_retrieval.contracts import (
+    HybridRetrievalConfiguration, RetrievalMode, TokenizerConfiguration,
+    CandidateSetStatus,
+)
+from app.knowledge.hybrid_retrieval.engine import HybridRetrievalEngine
 from app.conversation.conversation_steering.contracts import DiagnosticPriority
 from app.conversation.strategy.contracts import (
     ConversationMode,
@@ -189,6 +194,7 @@ def _processor(
     business_memory_scope=None,  # type: ignore[no-untyped-def]
     knowledge_retrieval_policy=None,  # type: ignore[no-untyped-def]
     knowledge_need_provider=None,  # type: ignore[no-untyped-def]
+    hybrid_retrieval_engine=None,  # type: ignore[no-untyped-def]
 ) -> ProductionTurnProcessor:
     config = load_config(get_settings().conversation_config_path)
     machine = ConversationStateMachine(config, initial_state)
@@ -242,6 +248,7 @@ def _processor(
         business_memory_scope=business_memory_scope,
         knowledge_retrieval_policy=knowledge_retrieval_policy,
         knowledge_need_provider=knowledge_need_provider,
+        hybrid_retrieval_engine=hybrid_retrieval_engine,
     )
 
 
@@ -1291,6 +1298,17 @@ def test_processor_carries_bci_advice_without_changing_authoritative_response() 
 
 
 def test_processor_carries_retrieval_plan_without_executing_retrieval() -> None:
+    class EmptyRepository:
+        def enumerate_snapshots(self, filters):  # type: ignore[no-untyped-def]
+            return ()
+    retrieval = HybridRetrievalEngine(
+        EmptyRepository(), None, None, None,
+        HybridRetrievalConfiguration(
+            RetrievalMode.LEXICAL,
+            TokenizerConfiguration(False, (), "english", True),
+            None, "index-v1", None,
+        ),
+    )
     baseline = _processor(MockReasoningProvider(default=_proposal()))
     processor = _processor(
         MockReasoningProvider(default=_proposal()),
@@ -1304,11 +1322,15 @@ def test_processor_carries_retrieval_plan_without_executing_retrieval() -> None:
                 explicit_direct_request=True,
             ),
         ),
+        hybrid_retrieval_engine=retrieval,
     )
     result = TurnCoordinator("call", processor).handle(_final())
     baseline_result = TurnCoordinator("call", baseline).handle(_final())
     assert result.turn_output is not None and baseline_result.turn_output is not None
     assert processor.retrieval_plan is not None
     assert processor.retrieval_plan.requirement == RetrievalRequirement.REQUIRED
+    assert processor.retrieval_candidates is not None
+    assert processor.retrieval_candidates.status == CandidateSetStatus.NO_CANDIDATES
     assert result.turn_output.response_plan.retrieval_plan == processor.retrieval_plan
+    assert not hasattr(result.turn_output.response_plan, "retrieval_candidates")
     assert result.turn_output.rendered_response == baseline_result.turn_output.rendered_response
