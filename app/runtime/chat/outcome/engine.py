@@ -28,6 +28,7 @@ from app.conversation.sales_playbook.contracts import OpportunityGuidance
 from app.runtime.chat.outcome.contracts import (
     DNCStatus,
     DecisionMakerStatus,
+    ExecutionStatus,
     FieldConfidence,
     FollowUpNeed,
     IdentifiedProblem,
@@ -47,6 +48,7 @@ class OutcomeIntelligenceEngine:
 
     def resolve(self, inp: OutcomeIntelligenceInput) -> LeadOutcome:
         dnc_status = _dnc_status(inp)
+        execution_status = _execution_status(inp)
         outcome_status = _outcome_status(inp, dnc_status)
         interest_level = _interest_level(inp)
         problems = _problems(inp)
@@ -70,6 +72,7 @@ class OutcomeIntelligenceEngine:
             outcome_status=outcome_status,
             interest_level=interest_level,
             dnc_status=dnc_status,
+            execution_status=execution_status,
             termination_reason=inp.termination_reason,
             identified_problems=problems,
             relevant_services=services,
@@ -94,12 +97,15 @@ def _dnc_status(inp: OutcomeIntelligenceInput) -> DNCStatus:
     return DNCStatus.NOT_DNC
 
 
+def _execution_status(inp: OutcomeIntelligenceInput) -> ExecutionStatus:
+    if inp.session_error:
+        return ExecutionStatus.FAILED
+    return ExecutionStatus.COMPLETED
+
+
 def _outcome_status(inp: OutcomeIntelligenceInput, dnc: DNCStatus) -> OutcomeStatus:
     if dnc == DNCStatus.DNC_CONFIRMED:
         return OutcomeStatus.DNC
-
-    if inp.session_error:
-        return OutcomeStatus.SESSION_FAILED
 
     if inp.is_not_interested:
         return OutcomeStatus.NOT_INTERESTED

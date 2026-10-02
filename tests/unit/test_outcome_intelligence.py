@@ -35,6 +35,7 @@ from app.conversation.sales_playbook.contracts import (
 from app.runtime.chat.outcome.contracts import (
     DNCStatus,
     DecisionMakerStatus,
+    ExecutionStatus,
     FieldConfidence,
     FollowUpNeed,
     IdentifiedProblem,
@@ -111,6 +112,7 @@ class TestLeadOutcomeContract:
             outcome_status=OutcomeStatus.INTERESTED,
             interest_level=InterestLevel.EXPLICIT_INTEREST,
             dnc_status=DNCStatus.NOT_DNC,
+            execution_status=ExecutionStatus.COMPLETED,
             termination_reason=TerminationReason.NATURAL_COMPLETION,
         )
         assert o.outcome_status == OutcomeStatus.INTERESTED
@@ -122,6 +124,7 @@ class TestLeadOutcomeContract:
                 outcome_status=OutcomeStatus.UNKNOWN,
                 interest_level=InterestLevel.UNKNOWN,
                 dnc_status=DNCStatus.NOT_DNC,
+                execution_status=ExecutionStatus.COMPLETED,
                 termination_reason=TerminationReason.UNKNOWN,
             )
 
@@ -132,6 +135,7 @@ class TestLeadOutcomeContract:
                 outcome_status=OutcomeStatus.INTERESTED,
                 interest_level=InterestLevel.UNKNOWN,
                 dnc_status=DNCStatus.DNC_CONFIRMED,
+                execution_status=ExecutionStatus.COMPLETED,
                 termination_reason=TerminationReason.UNKNOWN,
             )
 
@@ -141,6 +145,7 @@ class TestLeadOutcomeContract:
             outcome_status=OutcomeStatus.UNKNOWN,
             interest_level=InterestLevel.UNKNOWN,
             dnc_status=DNCStatus.NOT_DNC,
+            execution_status=ExecutionStatus.COMPLETED,
             termination_reason=TerminationReason.UNKNOWN,
         )
         with pytest.raises(FrozenInstanceError):
@@ -269,21 +274,75 @@ class TestUnknownOutcome:
 
 
 class TestSessionFailure:
-    def test_session_error_not_classified_as_uninterested(self):
+    def test_session_error_separates_from_customer_outcome(self):
         result = ENGINE.resolve(_input(
             session_error=True,
             termination_reason=TerminationReason.RUNTIME_ERROR,
         ))
-        assert result.outcome_status == OutcomeStatus.SESSION_FAILED
+        assert result.execution_status == ExecutionStatus.FAILED
+        assert result.outcome_status != OutcomeStatus.NOT_INTERESTED
         assert result.interest_level != InterestLevel.NO_INTEREST
         assert result.follow_up_needed == FollowUpNeed.NEEDED
 
-    def test_session_error_overrides_not_interested(self):
+    def test_interested_plus_runtime_failure_preserves_interest(self):
+        result = ENGINE.resolve(_input(
+            session_error=True,
+            prospect_observed=_observed(
+                explicit_interest_signal=ObservedValue(True, _PROV),
+            ),
+            termination_reason=TerminationReason.RUNTIME_ERROR,
+        ))
+        assert result.outcome_status == OutcomeStatus.INTERESTED
+        assert result.interest_level == InterestLevel.EXPLICIT_INTEREST
+        assert result.execution_status == ExecutionStatus.FAILED
+
+    def test_follow_up_plus_runtime_failure_preserves_follow_up(self):
+        result = ENGINE.resolve(_input(
+            session_error=True,
+            prospect_observed=_observed(
+                explicit_interest_signal=ObservedValue(True, _PROV),
+                explicit_next_step_request=ObservedValue(PreferredNextStep.CALLBACK, _PROV),
+            ),
+            termination_reason=TerminationReason.RUNTIME_ERROR,
+        ))
+        assert result.outcome_status == OutcomeStatus.FOLLOW_UP
+        assert result.next_step == "callback"
+        assert result.execution_status == ExecutionStatus.FAILED
+
+    def test_dnc_plus_runtime_failure_remains_dnc(self):
+        result = ENGINE.resolve(_input(
+            session_error=True,
+            is_dnc=True,
+            termination_reason=TerminationReason.RUNTIME_ERROR,
+        ))
+        assert result.outcome_status == OutcomeStatus.DNC
+        assert result.dnc_status == DNCStatus.DNC_CONFIRMED
+        assert result.execution_status == ExecutionStatus.FAILED
+
+    def test_no_signals_plus_runtime_failure_outcome_unknown(self):
+        result = ENGINE.resolve(_input(
+            session_error=True,
+            conversation_terminal=False,
+            termination_reason=TerminationReason.RUNTIME_ERROR,
+        ))
+        assert result.outcome_status == OutcomeStatus.UNKNOWN
+        assert result.execution_status == ExecutionStatus.FAILED
+
+    def test_not_interested_plus_runtime_failure_preserves_not_interested(self):
         result = ENGINE.resolve(_input(
             session_error=True,
             is_not_interested=True,
+            termination_reason=TerminationReason.RUNTIME_ERROR,
         ))
-        assert result.outcome_status == OutcomeStatus.SESSION_FAILED
+        assert result.outcome_status == OutcomeStatus.NOT_INTERESTED
+        assert result.execution_status == ExecutionStatus.FAILED
+
+    def test_clean_completion_marks_execution_completed(self):
+        result = ENGINE.resolve(_input(session_error=False))
+        assert result.execution_status == ExecutionStatus.COMPLETED
+
+    def test_session_failed_removed_from_outcome_enum(self):
+        assert not hasattr(OutcomeStatus, "SESSION_FAILED")
 
 
 # ===========================================================================

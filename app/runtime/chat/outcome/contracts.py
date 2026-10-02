@@ -21,7 +21,11 @@ from enum import Enum
 
 
 class OutcomeStatus(str, Enum):
-    """Primary classification of the conversation result."""
+    """Primary customer-facing classification of the conversation result.
+
+    This describes what the prospect wanted, NOT whether the pipeline
+    completed cleanly. See ExecutionStatus for runtime fault reporting.
+    """
 
     INTERESTED = "interested"
     NOT_INTERESTED = "not_interested"
@@ -30,8 +34,14 @@ class OutcomeStatus(str, Enum):
     NO_FIT = "no_fit"
     NEEDS_MORE_INFORMATION = "needs_more_information"
     COMPLETED_NO_COMMITMENT = "completed_no_commitment"
-    SESSION_FAILED = "session_failed"
     UNKNOWN = "unknown"
+
+
+class ExecutionStatus(str, Enum):
+    """Runtime/execution status, orthogonal to the customer outcome."""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class InterestLevel(str, Enum):
@@ -175,6 +185,7 @@ class LeadOutcome:
     outcome_status: OutcomeStatus
     interest_level: InterestLevel
     dnc_status: DNCStatus
+    execution_status: ExecutionStatus
     termination_reason: TerminationReason
 
     identified_problems: tuple[IdentifiedProblem, ...] = ()
@@ -202,6 +213,8 @@ class LeadOutcome:
             raise TypeError("outcome_status must be OutcomeStatus")
         if not isinstance(self.dnc_status, DNCStatus):
             raise TypeError("dnc_status must be DNCStatus")
+        if not isinstance(self.execution_status, ExecutionStatus):
+            raise TypeError("execution_status must be ExecutionStatus")
         if self.dnc_status == DNCStatus.DNC_CONFIRMED and self.outcome_status != OutcomeStatus.DNC:
             raise ValueError("DNC_CONFIRMED must have DNC outcome_status")
         if len(self.identified_problems) > 10:
