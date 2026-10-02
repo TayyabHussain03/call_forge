@@ -147,6 +147,8 @@ class ChatSession:
     transcript: tuple[TranscriptEntry, ...] = ()
     turn_count: int = 0
 
+    pre_call_plan: object | None = None
+
     def __post_init__(self) -> None:
         if not self.session_id or not self.session_id.strip():
             raise ValueError("session_id must not be empty")
