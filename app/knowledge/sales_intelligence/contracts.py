@@ -133,6 +133,45 @@ class ResponseComplexity(str, Enum):
     TECHNICAL = "technical"
 
 
+class ConversationObjective(str, Enum):
+    """Hidden objective driving this turn's knowledge strategy."""
+
+    EDUCATE = "educate"
+    CLARIFY = "clarify"
+    REDUCE_CONFUSION = "reduce_confusion"
+    DISCOVER = "discover"
+    BUILD_TRUST = "build_trust"
+    CONFIRM = "confirm"
+    COMPARE = "compare"
+    HANDLE_OBJECTION = "handle_objection"
+    CONTINUE_DISCUSSION = "continue_discussion"
+    CLOSE_GRACEFULLY = "close_gracefully"
+
+
+class KnowledgeConfidence(str, Enum):
+    """How confidently SKIE can explain based on approved evidence depth."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    MINIMAL = "minimal"
+
+
+class CognitiveLoad(str, Enum):
+    """Estimated cognitive load the customer can handle this turn."""
+
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
+class MomentumSignal(str, Enum):
+    """Whether to continue, stay, or pivot the knowledge flow."""
+
+    CONTINUE = "continue"
+    STAY_ON_TOPIC = "stay_on_topic"
+    PIVOT = "pivot"
+
+
 # ---------------------------------------------------------------------------
 # Evidence selection contracts
 # ---------------------------------------------------------------------------
@@ -186,6 +225,7 @@ class ExplanationPlan:
     analogy: AnalogyStrategy
     business_value_focus: BusinessValueFocus
     response_complexity: ResponseComplexity
+    confidence: KnowledgeConfidence
 
     def __post_init__(self) -> None:
         if not isinstance(self.depth, ExplanationDepth):
@@ -198,6 +238,8 @@ class ExplanationPlan:
             raise TypeError("business value focus must be typed")
         if not isinstance(self.response_complexity, ResponseComplexity):
             raise TypeError("response complexity must be typed")
+        if not isinstance(self.confidence, KnowledgeConfidence):
+            raise TypeError("knowledge confidence must be typed")
 
 
 @dataclass(frozen=True)
@@ -279,6 +321,10 @@ class KnowledgeConversationContext:
     suppressed: tuple[SuppressedEvidence, ...]
     explanation: ExplanationPlan
     disclosure: ProgressiveDisclosurePlan
+    conversation_objective: ConversationObjective
+    cognitive_load: CognitiveLoad
+    momentum: MomentumSignal
+    knowledge_saturated: bool
 
     def __post_init__(self) -> None:
         selected = tuple(self.selected)
@@ -293,6 +339,14 @@ class KnowledgeConversationContext:
             raise TypeError("explanation must be an explanation plan")
         if not isinstance(self.disclosure, ProgressiveDisclosurePlan):
             raise TypeError("disclosure must be a progressive disclosure plan")
+        if not isinstance(self.conversation_objective, ConversationObjective):
+            raise TypeError("conversation objective must be typed")
+        if not isinstance(self.cognitive_load, CognitiveLoad):
+            raise TypeError("cognitive load must be typed")
+        if not isinstance(self.momentum, MomentumSignal):
+            raise TypeError("momentum must be typed")
+        if not isinstance(self.knowledge_saturated, bool):
+            raise TypeError("knowledge saturated must be a boolean")
 
         positions = [item.sequence_position for item in selected]
         if positions != sorted(positions) or len(set(positions)) != len(positions):

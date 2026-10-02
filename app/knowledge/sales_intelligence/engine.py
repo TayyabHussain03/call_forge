@@ -30,8 +30,10 @@ from app.conversation.prospect_intelligence.contracts import (
 )
 from app.conversation.response_planning.contracts import ResponseLength
 from app.conversation.sales_cognition.contracts import (
+    ConversationMomentum,
     DiscoveryReadiness,
     InterestStrength,
+    ObjectionUnderstanding,
     TrustState,
 )
 from app.conversation.sales_playbook.contracts import (
@@ -48,13 +50,17 @@ from app.knowledge.evidence_validation.contracts import (
 from app.knowledge.sales_intelligence.contracts import (
     AnalogyStrategy,
     BusinessValueFocus,
+    CognitiveLoad,
+    ConversationObjective,
     DisclosureLevel,
     ExplanationDepth,
     ExplanationPlan,
     FollowUpStyle,
+    KnowledgeConfidence,
     KnowledgeConversationContext,
     KnowledgeIntent,
     KnowledgePriority,
+    MomentumSignal,
     ProgressiveDisclosurePlan,
     ResponseComplexity,
     SalesKnowledgeInput,
@@ -93,6 +99,11 @@ class SalesKnowledgeIntelligenceEngine:
 
         deferred_hint = _deferred_group_hint(suppressed)
         follow_up = _follow_up_style(value, suppressed)
+        confidence = _knowledge_confidence(selected)
+        objective = _conversation_objective(value, intent)
+        cognitive_load = _cognitive_load(value, depth)
+        momentum = _momentum_signal(value)
+        saturated = _knowledge_saturated(value)
 
         context = KnowledgeConversationContext(
             selected=selected_items,
@@ -103,6 +114,7 @@ class SalesKnowledgeIntelligenceEngine:
                 analogy=_analogy(value, depth),
                 business_value_focus=business_focus,
                 response_complexity=_response_complexity(value, depth),
+                confidence=confidence,
             ),
             disclosure=ProgressiveDisclosurePlan(
                 disclosure_level=disclosure_level,
@@ -110,6 +122,10 @@ class SalesKnowledgeIntelligenceEngine:
                 follow_up=follow_up,
                 deferred_group_hint=deferred_hint,
             ),
+            conversation_objective=objective,
+            cognitive_load=cognitive_load,
+            momentum=momentum,
+            knowledge_saturated=saturated,
         )
         validate_knowledge_context(context, value)
         return context
@@ -502,3 +518,129 @@ def _effective_role(value: SalesKnowledgeInput) -> ProspectRole:
     if prospect.likely_role is not None:
         return prospect.likely_role.value
     return ProspectRole.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Knowledge confidence
+# ---------------------------------------------------------------------------
+
+
+def _knowledge_confidence(
+    selected: list[ApprovedEvidence],
+) -> KnowledgeConfidence:
+    if not selected:
+        return KnowledgeConfidence.MINIMAL
+
+    qualities = [item.quality for item in selected]
+    if all(q == EvidenceQuality.DIRECT for q in qualities):
+        return KnowledgeConfidence.HIGH
+    if any(q == EvidenceQuality.LIMITED for q in qualities):
+        return KnowledgeConfidence.MINIMAL
+    return KnowledgeConfidence.MEDIUM
+
+
+# ---------------------------------------------------------------------------
+# Conversation objective
+# ---------------------------------------------------------------------------
+
+
+def _conversation_objective(
+    value: SalesKnowledgeInput,
+    intent: KnowledgeIntent,
+) -> ConversationObjective:
+    guidance = value.sales_guidance
+
+    if guidance.objection not in {ObjectionUnderstanding.NONE, ObjectionUnderstanding.UNKNOWN}:
+        return ConversationObjective.HANDLE_OBJECTION
+
+    if intent == KnowledgeIntent.COMPARE:
+        return ConversationObjective.COMPARE
+
+    if intent == KnowledgeIntent.ANSWER_QUESTION:
+        return ConversationObjective.CLARIFY
+
+    if guidance.trust in {TrustState.BUILDING, TrustState.UNKNOWN}:
+        return ConversationObjective.BUILD_TRUST
+
+    if intent == KnowledgeIntent.ILLUSTRATE_BENEFIT:
+        if guidance.interest in {InterestStrength.STRONG, InterestStrength.BUYING_SIGNAL}:
+            return ConversationObjective.CLOSE_GRACEFULLY
+        return ConversationObjective.CONFIRM
+
+    if intent == KnowledgeIntent.EDUCATE:
+        return ConversationObjective.EDUCATE
+
+    if intent == KnowledgeIntent.BUILD_AWARENESS:
+        return ConversationObjective.DISCOVER
+
+    if guidance.discovery_readiness == DiscoveryReadiness.READY_FOR_FIT:
+        return ConversationObjective.DISCOVER
+
+    return ConversationObjective.CONTINUE_DISCUSSION
+
+
+# ---------------------------------------------------------------------------
+# Cognitive load
+# ---------------------------------------------------------------------------
+
+
+def _cognitive_load(
+    value: SalesKnowledgeInput,
+    depth: ExplanationDepth,
+) -> CognitiveLoad:
+    if depth == ExplanationDepth.SIMPLE:
+        return CognitiveLoad.LOW
+
+    role = _effective_role(value)
+    if role in {ProspectRole.TECHNICAL_MANAGER, ProspectRole.OPERATIONS_MANAGER}:
+        return CognitiveLoad.HIGH
+
+    if depth == ExplanationDepth.DETAILED:
+        has_technical = any(
+            fact.kind in {BusinessFactKind.SOFTWARE, BusinessFactKind.INTEGRATION}
+            for fact in value.conversation.facts
+        )
+        if has_technical:
+            return CognitiveLoad.HIGH
+
+    return CognitiveLoad.NORMAL
+
+
+# ---------------------------------------------------------------------------
+# Momentum signal
+# ---------------------------------------------------------------------------
+
+
+def _momentum_signal(value: SalesKnowledgeInput) -> MomentumSignal:
+    guidance = value.sales_guidance
+    conversation = value.conversation
+
+    if conversation.pending_topic is not None and conversation.pending_topic != conversation.current_focus:
+        return MomentumSignal.PIVOT
+
+    if guidance.momentum in {ConversationMomentum.DECLINING, ConversationMomentum.RECOVERING}:
+        return MomentumSignal.STAY_ON_TOPIC
+
+    if guidance.objection not in {ObjectionUnderstanding.NONE, ObjectionUnderstanding.UNKNOWN}:
+        return MomentumSignal.STAY_ON_TOPIC
+
+    return MomentumSignal.CONTINUE
+
+
+# ---------------------------------------------------------------------------
+# Knowledge saturation
+# ---------------------------------------------------------------------------
+
+
+def _knowledge_saturated(value: SalesKnowledgeInput) -> bool:
+    if not value.already_discussed_evidence_ids:
+        return False
+    total = len(value.approved_evidence.items)
+    if total == 0:
+        return True
+    discussed = sum(
+        1
+        for item in value.approved_evidence.items
+        if item.approval_id in value.already_discussed_evidence_ids
+    )
+    return discussed >= total

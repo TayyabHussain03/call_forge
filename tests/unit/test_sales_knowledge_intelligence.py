@@ -66,13 +66,17 @@ from app.knowledge.evidence_validation.contracts import (
 from app.knowledge.sales_intelligence.contracts import (
     AnalogyStrategy,
     BusinessValueFocus,
+    CognitiveLoad,
+    ConversationObjective,
     DisclosureLevel,
     ExplanationDepth,
     ExplanationPlan,
     FollowUpStyle,
+    KnowledgeConfidence,
     KnowledgeConversationContext,
     KnowledgeIntent,
     KnowledgePriority,
+    MomentumSignal,
     ProgressiveDisclosurePlan,
     ResponseComplexity,
     SelectedEvidence,
@@ -806,12 +810,17 @@ class TestContractValidation:
                     analogy=AnalogyStrategy.NONE,
                     business_value_focus=BusinessValueFocus.NONE,
                     response_complexity=ResponseComplexity.MODERATE,
+                    confidence=KnowledgeConfidence.HIGH,
                 ),
                 disclosure=ProgressiveDisclosurePlan(
                     disclosure_level=DisclosureLevel.FULL,
                     max_evidence_this_turn=4,
                     follow_up=FollowUpStyle.NONE,
                 ),
+                conversation_objective=ConversationObjective.EDUCATE,
+                cognitive_load=CognitiveLoad.NORMAL,
+                momentum=MomentumSignal.CONTINUE,
+                knowledge_saturated=False,
             )
 
     def test_same_evidence_cannot_be_selected_and_suppressed(self):
@@ -835,10 +844,224 @@ class TestContractValidation:
                     analogy=AnalogyStrategy.NONE,
                     business_value_focus=BusinessValueFocus.NONE,
                     response_complexity=ResponseComplexity.MODERATE,
+                    confidence=KnowledgeConfidence.HIGH,
                 ),
                 disclosure=ProgressiveDisclosurePlan(
                     disclosure_level=DisclosureLevel.MODERATE,
                     max_evidence_this_turn=2,
                     follow_up=FollowUpStyle.NONE,
                 ),
+                conversation_objective=ConversationObjective.EDUCATE,
+                cognitive_load=CognitiveLoad.NORMAL,
+                momentum=MomentumSignal.CONTINUE,
+                knowledge_saturated=False,
             )
+
+
+# ---------------------------------------------------------------------------
+# Conversation objective
+# ---------------------------------------------------------------------------
+
+
+class TestConversationObjective:
+    def test_handle_objection_when_objection_present(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                guidance=_guidance(objection=ObjectionUnderstanding.BUDGET),
+            )
+        )
+        assert result.conversation_objective == ConversationObjective.HANDLE_OBJECTION
+
+    def test_build_trust_when_trust_building(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                guidance=_guidance(trust=TrustState.BUILDING, interest=InterestStrength.MODERATE),
+            )
+        )
+        assert result.conversation_objective == ConversationObjective.BUILD_TRUST
+
+    def test_clarify_when_answer_question_intent(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                problem=_problem(requested_solution="website design"),
+            )
+        )
+        assert result.conversation_objective == ConversationObjective.CLARIFY
+
+    def test_educate_for_educate_intent(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                playbook=_playbook(consultant_step=ConsultantStep.EDUCATE),
+            )
+        )
+        assert result.conversation_objective == ConversationObjective.EDUCATE
+
+    def test_close_gracefully_for_buying_signal(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                problem=_problem(category=ProblemCategory.WEBSITE, explicit_description="need site"),
+                guidance=_guidance(interest=InterestStrength.BUYING_SIGNAL),
+            )
+        )
+        assert result.conversation_objective == ConversationObjective.CLOSE_GRACEFULLY
+
+
+# ---------------------------------------------------------------------------
+# Knowledge confidence
+# ---------------------------------------------------------------------------
+
+
+class TestKnowledgeConfidence:
+    def test_high_confidence_all_direct(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(
+                    _evidence(approval_id="ae_1", quality=EvidenceQuality.DIRECT),
+                ),
+            )
+        )
+        assert result.explanation.confidence == KnowledgeConfidence.HIGH
+
+    def test_minimal_confidence_with_limited_evidence(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(
+                    _evidence(approval_id="ae_1", quality=EvidenceQuality.LIMITED),
+                ),
+            )
+        )
+        assert result.explanation.confidence == KnowledgeConfidence.MINIMAL
+
+    def test_medium_confidence_with_supported_evidence(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(
+                    _evidence(approval_id="ae_1", quality=EvidenceQuality.SUPPORTED),
+                ),
+            )
+        )
+        assert result.explanation.confidence == KnowledgeConfidence.MEDIUM
+
+    def test_minimal_confidence_empty_evidence(self):
+        result = ENGINE.design(_input(evidence_items=()))
+        assert result.explanation.confidence == KnowledgeConfidence.MINIMAL
+
+
+# ---------------------------------------------------------------------------
+# Cognitive load
+# ---------------------------------------------------------------------------
+
+
+class TestCognitiveLoad:
+    def test_low_load_for_simple_depth(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                guidance=_guidance(recommended_response_depth=ResponseLength.SHORT),
+            )
+        )
+        assert result.cognitive_load == CognitiveLoad.LOW
+
+    def test_high_load_for_technical_manager(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                prospect=_prospect(
+                    explicit_role=ObservedValue(value=ProspectRole.TECHNICAL_MANAGER, provenance=EvidenceProvenance(source_turn_id="t1", source_kind=EvidenceSourceKind.EXPLICIT_STATEMENT)),
+                ),
+            )
+        )
+        assert result.cognitive_load == CognitiveLoad.HIGH
+
+    def test_normal_load_default(self):
+        result = ENGINE.design(
+            _input(evidence_items=(_evidence(),))
+        )
+        assert result.cognitive_load == CognitiveLoad.NORMAL
+
+
+# ---------------------------------------------------------------------------
+# Momentum signal
+# ---------------------------------------------------------------------------
+
+
+class TestMomentumSignal:
+    def test_pivot_when_pending_topic_differs(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                conversation=_conversation(
+                    current_focus=ConversationTopic.WEBSITE,
+                    pending_topic=ConversationTopic.CRM,
+                ),
+            )
+        )
+        assert result.momentum == MomentumSignal.PIVOT
+
+    def test_stay_on_topic_when_declining(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                guidance=_guidance(momentum=ConversationMomentum.DECLINING),
+            )
+        )
+        assert result.momentum == MomentumSignal.STAY_ON_TOPIC
+
+    def test_stay_on_topic_when_objection(self):
+        result = ENGINE.design(
+            _input(
+                evidence_items=(_evidence(),),
+                guidance=_guidance(objection=ObjectionUnderstanding.NO_TIME),
+            )
+        )
+        assert result.momentum == MomentumSignal.STAY_ON_TOPIC
+
+    def test_continue_by_default(self):
+        result = ENGINE.design(
+            _input(evidence_items=(_evidence(),))
+        )
+        assert result.momentum == MomentumSignal.CONTINUE
+
+
+# ---------------------------------------------------------------------------
+# Knowledge saturation
+# ---------------------------------------------------------------------------
+
+
+class TestKnowledgeSaturation:
+    def test_not_saturated_when_fresh(self):
+        result = ENGINE.design(
+            _input(evidence_items=(_evidence(),))
+        )
+        assert result.knowledge_saturated is False
+
+    def test_saturated_when_all_discussed(self):
+        e1 = _evidence(approval_id="ae_1")
+        e2 = _evidence(approval_id="ae_2", group=EvidenceGroup.FEATURE)
+        result = ENGINE.design(
+            _input(
+                evidence_items=(e1, e2),
+                already_discussed=frozenset({"ae_1", "ae_2"}),
+            )
+        )
+        assert result.knowledge_saturated is True
+
+    def test_not_saturated_when_partially_discussed(self):
+        e1 = _evidence(approval_id="ae_1")
+        e2 = _evidence(approval_id="ae_2", group=EvidenceGroup.FEATURE)
+        result = ENGINE.design(
+            _input(
+                evidence_items=(e1, e2),
+                already_discussed=frozenset({"ae_1"}),
+            )
+        )
+        assert result.knowledge_saturated is False
+
+    def test_not_saturated_with_empty_evidence_and_no_history(self):
+        result = ENGINE.design(_input(evidence_items=()))
+        assert result.knowledge_saturated is False
