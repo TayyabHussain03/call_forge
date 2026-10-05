@@ -13,6 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.precall.contracts import PreCallConversationPlan
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +151,7 @@ class ChatSession:
     transcript: tuple[TranscriptEntry, ...] = ()
     turn_count: int = 0
 
-    pre_call_plan: object | None = None
+    pre_call_plan: PreCallConversationPlan | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id or not self.session_id.strip():
