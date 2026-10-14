@@ -32,10 +32,17 @@ from app.persistence.sqlite.repositories import (
     SqliteLeadStore,
     SqlitePolicyRegistry,
 )
+from app.persistence.sqlite.snapshot_store import SqliteRuntimeSnapshotStore
 from app.persistence.sqlite.turn_idempotency import (
     CommittedTurnRecord,
     SqliteTurnIdempotencyStore,
 )
+from app.application.sales_runtime.snapshot import (
+    SNAPSHOT_VERSION_CURRENT,
+    ConversationRuntimeSnapshot,
+)
+from app.application.sales_runtime.snapshot_protocol import SnapshotCapable
+from app.core.constants import ConversationState
 from app.precall.engine import PreCallIntelligenceEngine
 from app.runtime.chat.bootstrap.contracts import (
     BootstrapStatus,
@@ -127,11 +134,12 @@ class PersistentSalesRuntime:
         self.policies = SqlitePolicyRegistry(connection)
         self.bootstrap_idempotency = SqliteBootstrapIdempotencyStore(connection)
         self.turn_idempotency = SqliteTurnIdempotencyStore(connection)
+        self.snapshots = SqliteRuntimeSnapshotStore(connection)
         self.coordinator = AtomicSessionQueueCoordinator(
             connection, self.sessions, self.queue,
         )
         self.recovery = SessionRecoveryService(
-            self.sessions, self.queue, self.policies,
+            self.sessions, self.queue, self.policies, self.snapshots,
         )
         self._processor_factory = processor_factory
         self._pcie = pcie or PreCallIntelligenceEngine()
@@ -410,9 +418,21 @@ class PersistentSalesRuntime:
             transcript=(*session.transcript, prospect_entry, agent_entry),
         )
 
-        # 4. Short write transaction: compare-and-update + record idempotency
+        # 4. Short write transaction: session update + snapshot + idempotency
+        # all commit together or all roll back. The processor exports its
+        # authoritative state as a ConversationRuntimeSnapshot — the ONLY
+        # bridge between live runtime and persistent storage.
+        snapshot = self._export_snapshot_if_capable(
+            processor, session_id, updated_revision_target=session.revision + 1,
+        )
         with self._c.transaction():
             committed = self.sessions.update(updated)
+            if snapshot is not None:
+                # Rebind snapshot to the committed revision for consistency
+                snapshot = replace(
+                    snapshot, source_session_revision=committed.revision,
+                )
+                self.snapshots.save(snapshot)
             pipeline_outcome = (
                 output.pipeline_outcome.value if output.pipeline_outcome else None
             )
@@ -434,6 +454,20 @@ class PersistentSalesRuntime:
             conversation_terminal=output.conversation_terminal,
             pipeline_outcome=pipeline_outcome,
         )
+
+    def _export_snapshot_if_capable(
+        self,
+        processor: TurnProcessor,
+        session_id: str,
+        updated_revision_target: int,
+    ) -> ConversationRuntimeSnapshot | None:
+        """Export a ConversationRuntimeSnapshot from the processor if it
+        implements SnapshotCapable. Non-snapshottable processors silently
+        skip — recovery will return RUNTIME_SNAPSHOT_MISSING for them.
+        """
+        if not isinstance(processor, SnapshotCapable):
+            return None
+        return processor.export_snapshot(updated_revision_target)
 
     # ------------------------------------------------------------------
     # DNC durable write (triggered by priority logic / admin)
@@ -458,15 +492,27 @@ class PersistentSalesRuntime:
         session_id: str,
         campaign: CampaignConfig,
     ) -> SessionRecoveryResult:
-        """Attempt processor rebuild. For mid-conversation ACTIVE sessions,
-        returns RECOVERY_UNSUPPORTED_FOR_STATE and does NOT register a
-        processor — honest fail-closed."""
+        """Attempt processor rebuild.
+
+        - RECOVERED_FRESH: processor rebuilt from policy/campaign only
+        - RECOVERED_ACTIVE: processor rebuilt from policy + runtime snapshot
+          via the factory's create_from_snapshot method
+        - RUNTIME_SNAPSHOT_MISSING / INVALID / UNSUPPORTED_FOR_STATE:
+          no processor registered — fail-closed
+        """
         result = self.recovery.recover(session_id)
-        if result.status in (
-            RecoveryStatus.RECOVERED_FRESH,
-        ) and result.policy is not None and result.session is not None:
+        if result.session is None or result.policy is None:
+            return result
+        if result.status == RecoveryStatus.RECOVERED_FRESH:
             processor = self._processor_factory.create_for_session(
                 result.session, campaign, result.policy,
+            )
+            self._processors[session_id] = processor
+        elif result.status == RecoveryStatus.RECOVERED_ACTIVE:
+            if result.runtime_snapshot is None:
+                return result
+            processor = self._processor_factory.create_from_snapshot(
+                result.session, campaign, result.policy, result.runtime_snapshot,
             )
             self._processors[session_id] = processor
         return result

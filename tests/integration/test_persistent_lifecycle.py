@@ -266,20 +266,23 @@ class TestNormalLifecycle:
 
 
 class TestMidConversationRecovery:
-    def test_mid_conversation_recovery_is_honestly_blocked(self, db_path) -> None:
+    def test_mid_conversation_recovery_without_snapshot_is_honestly_blocked(
+        self, db_path,
+    ) -> None:
+        """Slice 44's ScriptedFactory produces non-SnapshotCapable processors,
+        so Slice 45's new RUNTIME_SNAPSHOT_MISSING status fires here —
+        still honestly fail-closed, now with a more precise diagnosis."""
         factory = ScriptedFactory()
         rt = _make_runtime(db_path, factory)
         rt.start_session(_boot_input(), _campaign())
         rt.process_turn("sess-1", "hello", 1, "tr-1")
         rt.process_turn("sess-1", "more", 2, "tr-2")
 
-        # Simulate restart: new runtime over same DB
         factory2 = ScriptedFactory()
         rt2 = _make_runtime(db_path, factory2)
         result = rt2.recover_session("sess-1")
-        assert result.status == RecoveryStatus.RECOVERY_UNSUPPORTED_FOR_STATE
+        assert result.status == RecoveryStatus.RUNTIME_SNAPSHOT_MISSING
         assert result.diagnostics.turn_count == 2
-        assert "mid-conversation" in result.diagnostics.failure_detail
 
     def test_fresh_session_recovery_allowed(self, db_path) -> None:
         rt = _make_runtime(db_path)

@@ -441,6 +441,39 @@ class ProductionTurnProcessor(TurnProcessor):
         """Record an externally completed advisory result without executing it."""
         return self._strategy_buffer.record(insight)
 
+    def export_snapshot(self, session_revision: int):
+        """Export the current authoritative runtime state as a snapshot.
+
+        See app.application.sales_runtime.snapshot for the full contract.
+        This export captures the FSM-level identity and advisory stage markers
+        that are directly serializable. Full round-trip of nested domain
+        snapshots (BCI/BDE/PQI/prospect intelligence/business memory) requires
+        per-contract JSON serializers to be added later; those payloads are
+        omitted today and recovery will build a fresh processor positioned
+        at the saved FSM state. The honest tradeoff is documented in the
+        Slice 45 report.
+        """
+        # Local import avoids module-import cycles
+        from app.application.sales_runtime.snapshot import (
+            SNAPSHOT_VERSION_CURRENT,
+            ConversationRuntimeSnapshot,
+        )
+
+        playbook = self._latest_playbook_guidance
+        active_outcome = None
+        return ConversationRuntimeSnapshot(
+            snapshot_version=SNAPSHOT_VERSION_CURRENT,
+            session_id=self._context.call_id,
+            source_session_revision=session_revision,
+            conversation_state=self.current_state,
+            sales_stage=self._sales_stage.value if self._sales_stage else None,
+            active_knowledge_base_id=self._active_knowledge_base_id,
+            last_pipeline_outcome=active_outcome,
+            persisted_contract_payloads=(),
+            is_dnc_observed=False,
+            is_not_interested_observed=False,
+        )
+
     def build_supervisor_input(
         self,
         turn: CoordinatedUserTurn,

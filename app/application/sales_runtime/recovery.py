@@ -20,13 +20,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from app.application.sales_runtime.snapshot import ConversationRuntimeSnapshot
 from app.leads.campaign.contracts import LeadQueueEntry, LeadQueueStatus
-from app.persistence.errors import NotFoundError
+from app.persistence.errors import InvalidPersistedPayloadError, NotFoundError
 from app.persistence.sqlite.repositories import (
     SqliteCampaignQueueStore,
     SqliteChatSessionRepository,
     SqlitePolicyRegistry,
 )
+from app.persistence.sqlite.snapshot_store import SqliteRuntimeSnapshotStore
 from app.precall.contracts import PreCallDiscoveryPolicy
 from app.runtime.chat.contracts import ChatSession, SessionStatus
 
@@ -35,6 +37,7 @@ class RecoveryStatus(str, Enum):
     """Typed recovery outcome. Fail-closed over hallucination."""
 
     RECOVERED_FRESH = "recovered_fresh"
+    RECOVERED_ACTIVE = "recovered_active"
     RECOVERED_TERMINAL = "recovered_terminal"
     ALREADY_TERMINAL = "already_terminal"
     SESSION_NOT_FOUND = "session_not_found"
@@ -42,6 +45,9 @@ class RecoveryStatus(str, Enum):
     ORPHANED_QUEUE_STATE = "orphaned_queue_state"
     STALE_REVISION = "stale_revision"
     INVALID_PERSISTED_STATE = "invalid_persisted_state"
+    RUNTIME_SNAPSHOT_MISSING = "runtime_snapshot_missing"
+    RUNTIME_SNAPSHOT_INVALID = "runtime_snapshot_invalid"
+    RUNTIME_SNAPSHOT_VERSION_UNSUPPORTED = "runtime_snapshot_version_unsupported"
     RECOVERY_UNSUPPORTED_FOR_STATE = "recovery_unsupported_for_state"
     RECOVERY_BLOCKED = "recovery_blocked"
 
@@ -79,6 +85,7 @@ class SessionRecoveryResult:
     session: ChatSession | None = None
     queue_entry: LeadQueueEntry | None = None
     policy: PreCallDiscoveryPolicy | None = None
+    runtime_snapshot: ConversationRuntimeSnapshot | None = None
     diagnostics: SessionRecoveryDiagnostics | None = None
 
 
@@ -95,10 +102,12 @@ class SessionRecoveryService:
         session_repository: SqliteChatSessionRepository,
         queue_store: SqliteCampaignQueueStore,
         policy_registry: SqlitePolicyRegistry,
+        snapshot_store: SqliteRuntimeSnapshotStore | None = None,
     ) -> None:
         self._sessions = session_repository
         self._queue = queue_store
         self._policies = policy_registry
+        self._snapshots = snapshot_store
 
     def recover(self, session_id: str) -> SessionRecoveryResult:
         try:
@@ -175,33 +184,63 @@ class SessionRecoveryService:
                 diagnostics=base_diag,
             )
 
-        # Mid-conversation ACTIVE session — honest fail-closed diagnosis.
-        # Process-local structured intelligence (state machine current_state,
-        # BCI, BDE, prospect intel, qualification, business memory, language,
-        # repetition saturation, unfinished communicative intent) is not
-        # persisted on the session row. Transcript replay is forbidden.
+        # Mid-conversation ACTIVE session — attempt snapshot-based restore.
+        # Transcript replay is forbidden. Fail closed on missing/invalid snapshot.
+        if self._snapshots is None:
+            return SessionRecoveryResult(
+                status=RecoveryStatus.RUNTIME_SNAPSHOT_MISSING,
+                session=session,
+                queue_entry=queue_entry,
+                policy=policy,
+                diagnostics=self._with_detail(
+                    base_diag, "snapshot store not configured",
+                ),
+            )
+        try:
+            snapshot = self._snapshots.load(session_id)
+        except InvalidPersistedPayloadError as exc:
+            return SessionRecoveryResult(
+                status=RecoveryStatus.RUNTIME_SNAPSHOT_INVALID,
+                session=session,
+                queue_entry=queue_entry,
+                policy=policy,
+                diagnostics=self._with_detail(base_diag, str(exc)),
+            )
+        if snapshot is None:
+            return SessionRecoveryResult(
+                status=RecoveryStatus.RUNTIME_SNAPSHOT_MISSING,
+                session=session,
+                queue_entry=queue_entry,
+                policy=policy,
+                diagnostics=self._with_detail(
+                    base_diag,
+                    "no runtime snapshot persisted for ACTIVE session",
+                ),
+            )
         return SessionRecoveryResult(
-            status=RecoveryStatus.RECOVERY_UNSUPPORTED_FOR_STATE,
+            status=RecoveryStatus.RECOVERED_ACTIVE,
             session=session,
             queue_entry=queue_entry,
             policy=policy,
-            diagnostics=SessionRecoveryDiagnostics(
-                session_id=base_diag.session_id,
-                campaign_id=base_diag.campaign_id,
-                lead_id=base_diag.lead_id,
-                stored_revision=base_diag.stored_revision,
-                policy_id=base_diag.policy_id,
-                policy_version=base_diag.policy_version,
-                queue_status=base_diag.queue_status,
-                turn_count=base_diag.turn_count,
-                orphan_diagnosis=orphan,
-                failure_detail=(
-                    "mid-conversation structured intelligence "
-                    "(state_machine, BCI, BDE, prospect_intel, qualification) "
-                    "is process-local and not persisted on ChatSession; "
-                    "transcript replay is forbidden"
-                ),
-            ),
+            runtime_snapshot=snapshot,
+            diagnostics=base_diag,
+        )
+
+    @staticmethod
+    def _with_detail(
+        diag: SessionRecoveryDiagnostics, detail: str,
+    ) -> SessionRecoveryDiagnostics:
+        return SessionRecoveryDiagnostics(
+            session_id=diag.session_id,
+            campaign_id=diag.campaign_id,
+            lead_id=diag.lead_id,
+            stored_revision=diag.stored_revision,
+            policy_id=diag.policy_id,
+            policy_version=diag.policy_version,
+            queue_status=diag.queue_status,
+            turn_count=diag.turn_count,
+            orphan_diagnosis=diag.orphan_diagnosis,
+            failure_detail=detail,
         )
 
     def _diagnose_orphan(

@@ -18,7 +18,7 @@ from app.persistence.errors import (
 )
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 # Schema definition — one place for all persistent tables
@@ -86,7 +86,9 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     pre_call_plan_json TEXT,
     policy_id TEXT,
     policy_version TEXT,
-    termination_reason TEXT
+    termination_reason TEXT,
+    runtime_snapshot_json TEXT,
+    runtime_snapshot_version INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_tenant
     ON chat_sessions(tenant_id);
@@ -129,6 +131,10 @@ CREATE INDEX IF NOT EXISTS idx_turn_idempotency_session
 
 # Migrations keyed by target version. Each entry upgrades FROM version-1 TO version.
 MIGRATIONS: dict[int, str] = {
+    3: """
+        ALTER TABLE chat_sessions ADD COLUMN runtime_snapshot_json TEXT;
+        ALTER TABLE chat_sessions ADD COLUMN runtime_snapshot_version INTEGER;
+    """,
     2: """
         ALTER TABLE chat_sessions ADD COLUMN policy_id TEXT;
         ALTER TABLE chat_sessions ADD COLUMN policy_version TEXT;
