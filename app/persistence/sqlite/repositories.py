@@ -52,19 +52,24 @@ class SqliteChatSessionRepository:
 
     def create(self, session: ChatSession) -> ChatSession:
         stored = replace(session, revision=0)
+        plan = stored.pre_call_plan
         try:
             self._c.raw.execute(
                 """INSERT INTO chat_sessions (
                     session_id, tenant_id, campaign_id, lead_id,
                     status, mode, revision, turn_count,
-                    transcript_json, pre_call_plan_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    transcript_json, pre_call_plan_json,
+                    policy_id, policy_version, termination_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     stored.session_id, stored.tenant_id, stored.campaign_id,
                     stored.lead_id, stored.status.value, stored.mode.value,
                     stored.revision, stored.turn_count,
                     transcript_to_json(stored.transcript),
-                    plan_to_json(stored.pre_call_plan) if stored.pre_call_plan else None,
+                    plan_to_json(plan) if plan else None,
+                    plan.policy_id if plan else None,
+                    plan.policy_version if plan else None,
+                    None,
                 ),
             )
         except sqlite3.IntegrityError as exc:

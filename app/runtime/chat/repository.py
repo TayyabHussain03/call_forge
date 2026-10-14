@@ -63,3 +63,7 @@ class InMemoryChatSessionRepository:
             if s.status == SessionStatus.ACTIVE
             and (tenant_id is None or s.tenant_id == tenant_id)
         )
+
+    def delete(self, session_id: str) -> None:
+        """Used only by transactional rollback paths. Infra concern."""
+        self._sessions.pop(session_id, None)

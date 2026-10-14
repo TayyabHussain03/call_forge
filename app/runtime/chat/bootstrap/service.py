@@ -239,8 +239,12 @@ class SessionBootstrapService:
             try:
                 transitioned_entry = queue_transitioner(queue_entry)
             except Exception:
-                # Rollback: remove the session we just created
-                self._sessions._sessions.pop(bootstrap_input.session_id, None)
+                # Rollback: remove the session we just created via protocol method.
+                # In-memory repo deletes the dict entry; SQLite repo deletes the row.
+                try:
+                    self._sessions.delete(bootstrap_input.session_id)
+                except Exception:
+                    pass
                 return self._reject(
                     BootstrapStatus.QUEUE_TRANSITION_FAILED,
                     "queue transition failed after session creation",

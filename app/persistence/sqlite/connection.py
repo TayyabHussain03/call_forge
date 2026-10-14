@@ -18,7 +18,7 @@ from app.persistence.errors import (
 )
 
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 # Schema definition — one place for all persistent tables
@@ -83,7 +83,10 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     revision INTEGER NOT NULL DEFAULT 0,
     turn_count INTEGER NOT NULL DEFAULT 0,
     transcript_json TEXT NOT NULL DEFAULT '[]',
-    pre_call_plan_json TEXT
+    pre_call_plan_json TEXT,
+    policy_id TEXT,
+    policy_version TEXT,
+    termination_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_tenant
     ON chat_sessions(tenant_id);
@@ -108,7 +111,43 @@ CREATE TABLE IF NOT EXISTS bootstrap_idempotency (
     status TEXT NOT NULL,
     result_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS turn_idempotency (
+    session_id TEXT NOT NULL,
+    turn_request_id TEXT NOT NULL,
+    turn_sequence INTEGER NOT NULL,
+    committed_revision INTEGER NOT NULL,
+    agent_response TEXT NOT NULL,
+    conversation_terminal INTEGER NOT NULL DEFAULT 0,
+    pipeline_outcome TEXT,
+    PRIMARY KEY (session_id, turn_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_turn_idempotency_session
+    ON turn_idempotency(session_id);
 """
+
+
+# Migrations keyed by target version. Each entry upgrades FROM version-1 TO version.
+MIGRATIONS: dict[int, str] = {
+    2: """
+        ALTER TABLE chat_sessions ADD COLUMN policy_id TEXT;
+        ALTER TABLE chat_sessions ADD COLUMN policy_version TEXT;
+        ALTER TABLE chat_sessions ADD COLUMN termination_reason TEXT;
+
+        CREATE TABLE IF NOT EXISTS turn_idempotency (
+            session_id TEXT NOT NULL,
+            turn_request_id TEXT NOT NULL,
+            turn_sequence INTEGER NOT NULL,
+            committed_revision INTEGER NOT NULL,
+            agent_response TEXT NOT NULL,
+            conversation_terminal INTEGER NOT NULL DEFAULT 0,
+            pipeline_outcome TEXT,
+            PRIMARY KEY (session_id, turn_request_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_turn_idempotency_session
+            ON turn_idempotency(session_id);
+    """,
+}
 
 
 class SqliteConnection:
@@ -142,7 +181,8 @@ class SqliteConnection:
         return self._conn
 
     def _initialize_schema(self) -> None:
-        """Create tables and record schema version. Idempotent."""
+        """Create tables, apply migrations, and record schema version. Idempotent."""
+        # Baseline schema — current full schema; CREATE TABLE IF NOT EXISTS is safe
         self._conn.executescript(SCHEMA_V1)
         cur = self._conn.execute("SELECT version FROM schema_version LIMIT 1")
         row = cur.fetchone()
@@ -151,14 +191,32 @@ class SqliteConnection:
                 "INSERT INTO schema_version(version) VALUES (?)",
                 (CURRENT_SCHEMA_VERSION,),
             )
-        else:
-            stored = int(row["version"])
-            if stored > CURRENT_SCHEMA_VERSION:
-                raise SchemaMismatchError(
-                    f"stored schema version {stored} is newer than supported "
-                    f"version {CURRENT_SCHEMA_VERSION}"
-                )
-            # future: run migrations stored → current
+            return
+
+        stored = int(row["version"])
+        if stored > CURRENT_SCHEMA_VERSION:
+            raise SchemaMismatchError(
+                f"stored schema version {stored} is newer than supported "
+                f"version {CURRENT_SCHEMA_VERSION}"
+            )
+        if stored < CURRENT_SCHEMA_VERSION:
+            for target in range(stored + 1, CURRENT_SCHEMA_VERSION + 1):
+                migration = MIGRATIONS.get(target)
+                if migration is None:
+                    raise SchemaMismatchError(
+                        f"no migration registered for target version {target}"
+                    )
+                # Each ALTER TABLE needs its own guard — SQLite can't do IF NOT EXISTS on columns
+                try:
+                    self._conn.executescript(migration)
+                except sqlite3.OperationalError as exc:
+                    # Already migrated columns — tolerate duplicate ALTER TABLE
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+            self._conn.execute(
+                "UPDATE schema_version SET version = ?",
+                (CURRENT_SCHEMA_VERSION,),
+            )
 
     def schema_version(self) -> int:
         row = self._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
