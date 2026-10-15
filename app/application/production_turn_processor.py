@@ -247,6 +247,11 @@ class ProductionTurnProcessor(TurnProcessor):
         qualification_evidence_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], QualificationEvidence | None] | None = None,
         initial_qualification: QualificationSnapshot | None = None,
         initial_language_profile: LanguageProfile | None = None,
+        # Slice 49 — participant-aware wiring. All additive and optional.
+        participant_evidence_provider=None,
+        initial_active_participant=None,
+        initial_archived_participants=(),
+        initial_discussion_coverage=None,
         business_memory_scope: BusinessMemoryScope | None = None,
         knowledge_retrieval_policy: KnowledgeRetrievalPolicy | None = None,
         knowledge_need_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], tuple[KnowledgeNeed, ...]] | None = None,
@@ -327,6 +332,33 @@ class ProductionTurnProcessor(TurnProcessor):
         # understanding provider overrides it. Carries recovery continuity so
         # a Roman Urdu switch before restart is not forgotten.
         self._last_language_profile: LanguageProfile | None = initial_language_profile
+
+        # Slice 49 — participant-aware state. The processor OWNS participant
+        # resolution via the deterministic policy; providers only propose
+        # typed evidence. Business/BCI state remains shared; participant-
+        # scoped state (role, interest, objections, language, discussion
+        # exposure) is isolated per ParticipantReference.
+        from app.conversation.participant.contracts import (
+            DiscussionCoverageState,
+        )
+        from app.conversation.participant.policy import (
+            ParticipantContinuityPolicy,
+            deterministic_participant_factory,
+        )
+        self._participant_evidence_provider = participant_evidence_provider
+        self._active_participant = initial_active_participant
+        self._archived_participant_states: tuple = tuple(initial_archived_participants)
+        self._discussion_coverage = (
+            initial_discussion_coverage or DiscussionCoverageState()
+        )
+        self._participant_policy = ParticipantContinuityPolicy()
+        _factory_start = len(self._archived_participant_states) + (
+            1 if self._active_participant is not None else 0
+        )
+        self._participant_factory = deterministic_participant_factory(
+            initial_context.call_id, start=_factory_start,
+        )
+        self._latest_participant_decision = None
         self._business_memory_scope = business_memory_scope
         self._business_memory_engine = BusinessMentalModelEngine()
         self._business_memory: BusinessMentalModelSnapshot | None = None
@@ -452,6 +484,123 @@ class ProductionTurnProcessor(TurnProcessor):
         """Most recent authoritative language profile; survives per-turn and restart."""
         return self._last_language_profile
 
+    @property
+    def active_participant(self):
+        """Session-scoped current participant reference, if any."""
+        return self._active_participant
+
+    @property
+    def archived_participant_states(self):
+        """Tuple of archived participant conversation states."""
+        return self._archived_participant_states
+
+    @property
+    def discussion_coverage(self):
+        """Participant-aware per-concept exposure state."""
+        return self._discussion_coverage
+
+    @property
+    def latest_participant_decision(self):
+        """Policy decision made on the most recent turn carrying evidence."""
+        return self._latest_participant_decision
+
+    def re_explanation_decision(self, concept_id: str, intent=None):
+        """Query the participant-aware ReExplanationPolicy for a concept.
+
+        Returns a ReExplanationDecision which downstream planning can
+        consult to choose SUPPRESS / CONCISE_RECAP /
+        FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT / DEEPEN / SIMPLIFY /
+        NO_PRIOR_COVERAGE.
+        """
+        from app.conversation.participant.contracts import (
+            ParticipantContinuityState,
+        )
+        from app.conversation.participant.policy import (
+            ReExplanationIntent, ReExplanationPolicy,
+        )
+        policy = ReExplanationPolicy()
+        state = (
+            self._latest_participant_decision.state
+            if self._latest_participant_decision is not None
+            else ParticipantContinuityState.UNKNOWN
+        )
+        active_ref = (
+            self._active_participant.reference_id
+            if self._active_participant is not None else "unknown"
+        )
+        return policy.decide(
+            state, active_ref, concept_id, self._discussion_coverage,
+            intent=(intent or ReExplanationIntent.NONE),
+        )
+
+    def record_discussion_coverage(
+        self, concept_id: str, depth, source_turn_id: str,
+    ) -> None:
+        """Append a coverage entry for the current active participant.
+
+        Call this ONLY after a response explaining the concept has
+        committed successfully. The persistence layer serializes the
+        resulting DiscussionCoverageState with the turn's snapshot.
+        """
+        from app.conversation.participant.contracts import (
+            DiscussionCoverageEntry, DiscussionCoverageState, ExplanationDepth,
+        )
+        if self._active_participant is None:
+            return
+        if not isinstance(depth, ExplanationDepth):
+            raise TypeError("depth must be an ExplanationDepth")
+        new_entry = DiscussionCoverageEntry(
+            participant_reference_id=self._active_participant.reference_id,
+            concept_id=concept_id,
+            depth=depth,
+            source_turn_id=source_turn_id,
+        )
+        self._discussion_coverage = DiscussionCoverageState(
+            entries=self._discussion_coverage.entries + (new_entry,),
+            asked_question_concepts=self._discussion_coverage.asked_question_concepts,
+            handled_objection_concepts=self._discussion_coverage.handled_objection_concepts,
+            discussed_evidence_ids=self._discussion_coverage.discussed_evidence_ids,
+        )
+
+    def _apply_participant_decision(self, decision) -> None:
+        """Apply a resolved participant decision to processor state.
+
+        NEW_CONFIRMED: archive the current active-participant snapshot (as
+        a ParticipantConversationState capturing per-participant exposure
+        + role hint + language preference) and install the new active.
+        SAME_CONFIRMED: refine the active participant (role hint only).
+        LIKELY_NEW / UNCERTAIN / UNKNOWN: do NOT switch — fail-closed.
+        """
+        from app.conversation.participant.contracts import (
+            ParticipantContinuityState, ParticipantConversationState,
+        )
+        if decision.state == ParticipantContinuityState.NEW_CONFIRMED:
+            if self._active_participant is not None:
+                heard = self._discussion_coverage.heard_by(
+                    self._active_participant.reference_id,
+                )
+                archived = ParticipantConversationState(
+                    participant=self._active_participant,
+                    heard_explanation_concepts=heard,
+                    role_hint=self._active_participant.role_hint,
+                    language_preference=(
+                        self._last_language_profile.primary_language
+                        if self._last_language_profile else None
+                    ),
+                )
+                self._archived_participant_states = (
+                    *self._archived_participant_states, archived,
+                )
+            self._active_participant = decision.active_participant
+            # New participant: reset per-turn language snapshot so provider
+            # of next turn can refresh it from their utterance.
+            self._last_language_profile = None
+            return
+        if decision.state == ParticipantContinuityState.SAME_CONFIRMED:
+            self._active_participant = decision.active_participant
+            return
+        # LIKELY_NEW, UNCERTAIN, UNKNOWN: preserve active, do not switch.
+
     def export_snapshot(self, session_revision: int):
         """Export the authoritative runtime state as a ConversationRuntimeSnapshot.
 
@@ -463,10 +612,16 @@ class ProductionTurnProcessor(TurnProcessor):
         """
         from app.application.sales_runtime.serializers import (
             BUSINESS_CONVERSATION_KEY,
+            DISCUSSION_COVERAGE_KEY,
             LANGUAGE_PROFILE_KEY,
+            PARTICIPANT_STATE_KEY,
+            PROSPECT_INTELLIGENCE_KEY,
             QUALIFICATION_KEY,
             BusinessConversationSerializer,
+            DiscussionCoverageSerializer,
             LanguageProfileSerializer,
+            ParticipantStateSerializer,
+            ProspectIntelligenceSerializer,
             QualificationSerializer,
         )
         from app.application.sales_runtime.snapshot import (
@@ -488,6 +643,28 @@ class ProductionTurnProcessor(TurnProcessor):
             payloads.append((
                 QUALIFICATION_KEY,
                 QualificationSerializer().serialize(self._qualification),
+            ))
+        payloads.append((
+            PROSPECT_INTELLIGENCE_KEY,
+            ProspectIntelligenceSerializer().serialize(self._prospect_intelligence),
+        ))
+        if self._active_participant is not None or self._archived_participant_states:
+            payloads.append((
+                PARTICIPANT_STATE_KEY,
+                ParticipantStateSerializer().serialize(
+                    self._active_participant, self._archived_participant_states,
+                ),
+            ))
+        # Only emit coverage when non-empty — avoids empty-payload churn
+        if (
+            self._discussion_coverage.entries
+            or self._discussion_coverage.asked_question_concepts
+            or self._discussion_coverage.handled_objection_concepts
+            or self._discussion_coverage.discussed_evidence_ids
+        ):
+            payloads.append((
+                DISCUSSION_COVERAGE_KEY,
+                DiscussionCoverageSerializer().serialize(self._discussion_coverage),
             ))
 
         return ConversationRuntimeSnapshot(
@@ -569,6 +746,25 @@ class ProductionTurnProcessor(TurnProcessor):
                 if understanding.language_profile is not None:
                     language_profile = understanding.language_profile
                     self._last_language_profile = language_profile
+            # Participant resolution — MUST happen before any person-scoped
+            # evidence from this turn is attributed. Provider proposes; the
+            # deterministic policy decides. Fail-closed on absent provider.
+            if self._participant_evidence_provider is not None:
+                try:
+                    participant_evidence = self._participant_evidence_provider(
+                        turn, understanding,
+                    )
+                except Exception:
+                    participant_evidence = None
+                if participant_evidence is not None:
+                    self._latest_participant_decision = (
+                        self._participant_policy.decide(
+                            self._active_participant,
+                            participant_evidence,
+                            self._participant_factory,
+                        )
+                    )
+                    self._apply_participant_decision(self._latest_participant_decision)
             if self._business_conversation_evidence is not None:
                 business_evidence = self._business_conversation_evidence(
                     turn, preliminary_context, understanding

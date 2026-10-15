@@ -87,14 +87,13 @@ class ParticipantContinuityPolicy:
 
         if evidence.kind == ParticipantEvidenceKind.EXPLICIT_SELF_IDENTIFICATION:
             if active is None:
+                # First-ever participant: no prior to archive. SAME_CONFIRMED
+                # is the correct state — "same" because there is no other.
                 new_ref = new_reference_factory(evidence.claimed_role_hint)
                 return ParticipantContinuityDecision(
-                    state=ParticipantContinuityState.NEW_CONFIRMED,
+                    state=ParticipantContinuityState.SAME_CONFIRMED,
                     active_participant=new_ref,
                     evidence_kind=evidence.kind,
-                    archived_prior=ParticipantReference(
-                        reference_id=f"{new_ref.reference_id}__prior_placeholder",
-                    ),
                 )
             # Same person re-identifying themselves — role hint may refine
             refined = replace(
