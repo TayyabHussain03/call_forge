@@ -19,6 +19,16 @@ from app.application.sales_runtime.serializers.language import (
     LANGUAGE_PROFILE_KEY,
     LanguageProfileSerializer,
 )
+from app.application.sales_runtime.serializers.participant import (
+    DISCUSSION_COVERAGE_KEY,
+    PARTICIPANT_STATE_KEY,
+    DiscussionCoverageSerializer,
+    ParticipantStateSerializer,
+)
+from app.application.sales_runtime.serializers.prospect import (
+    PROSPECT_INTELLIGENCE_KEY,
+    ProspectIntelligenceSerializer,
+)
 from app.application.sales_runtime.serializers.qualification import (
     QUALIFICATION_KEY,
     QualificationSerializer,
@@ -35,4 +45,10 @@ __all__ = [
     "LanguageProfileSerializer",
     "QUALIFICATION_KEY",
     "QualificationSerializer",
+    "PROSPECT_INTELLIGENCE_KEY",
+    "ProspectIntelligenceSerializer",
+    "PARTICIPANT_STATE_KEY",
+    "ParticipantStateSerializer",
+    "DISCUSSION_COVERAGE_KEY",
+    "DiscussionCoverageSerializer",
 ]

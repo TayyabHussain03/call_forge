@@ -17,16 +17,17 @@ from enum import Enum
 
 from app.application.sales_runtime.serializers import (
     BUSINESS_CONVERSATION_KEY,
+    DISCUSSION_COVERAGE_KEY,
     LANGUAGE_PROFILE_KEY,
+    PARTICIPANT_STATE_KEY,
+    PROSPECT_INTELLIGENCE_KEY,
     QUALIFICATION_KEY,
     PayloadRequirement,
 )
 from app.application.sales_runtime.snapshot import SNAPSHOT_VERSION_CURRENT
 
 
-# Reserved stable keys. Serializers for OPTIONAL_DERIVED keys may be added
-# in follow-up slices without changing the top-level snapshot version.
-PROSPECT_INTELLIGENCE_KEY = "prospect_intelligence"
+# Reserved stable keys for payloads whose serializers may land later.
 STEERING_KEY = "steering"
 UNFINISHED_INTENT_KEY = "unfinished_intent"
 REPETITION_STATE_KEY = "repetition_state"
@@ -70,6 +71,9 @@ def default_manifest() -> SnapshotCompatibilityManifest:
             (BUSINESS_CONVERSATION_KEY, 1),
             (QUALIFICATION_KEY, 1),
             (LANGUAGE_PROFILE_KEY, 1),
+            (PROSPECT_INTELLIGENCE_KEY, 1),
+            (PARTICIPANT_STATE_KEY, 1),
+            (DISCUSSION_COVERAGE_KEY, 1),
         ),
         required_for_active_recovery=frozenset({
             BUSINESS_CONVERSATION_KEY,
@@ -78,6 +82,8 @@ def default_manifest() -> SnapshotCompatibilityManifest:
             LANGUAGE_PROFILE_KEY,
             QUALIFICATION_KEY,
             PROSPECT_INTELLIGENCE_KEY,
+            PARTICIPANT_STATE_KEY,
+            DISCUSSION_COVERAGE_KEY,
             STEERING_KEY,
             UNFINISHED_INTENT_KEY,
             REPETITION_STATE_KEY,
