@@ -311,9 +311,19 @@ def db_path(tmp_path):
 def _make_runtime(
     db_path: str, factory: ScriptedSnapshotFactory | None = None,
 ) -> PersistentSalesRuntime:
+    from app.application.sales_runtime.manifest import SnapshotCompatibilityManifest
     conn = SqliteConnection(db_path)
     f = factory or ScriptedSnapshotFactory()
-    rt = PersistentSalesRuntime(conn, f)
+    # Slice 45 scripted factory emits its own stub payload; use a permissive
+    # manifest so the architecture is proven without requiring the Slice 46
+    # BCI/LanguageProfile payloads.
+    permissive = SnapshotCompatibilityManifest(
+        top_level_snapshot_version=SNAPSHOT_VERSION_CURRENT,
+        supported_contract_versions=(),
+        required_for_active_recovery=frozenset(),
+        optional_derived=frozenset(),
+    )
+    rt = PersistentSalesRuntime(conn, f, snapshot_manifest=permissive)
     if rt.leads.get("t1", "c1", "lead-1") is None:
         rt.leads.save(_lead())
     if rt.queue.get("t1", "c1", "lead-1") is None:

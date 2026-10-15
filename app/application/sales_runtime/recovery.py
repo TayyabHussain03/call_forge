@@ -20,6 +20,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from app.application.sales_runtime.manifest import (
+    SnapshotCompatibilityManifest,
+    default_manifest,
+)
+from app.application.sales_runtime.serializers.base import parse_envelope
 from app.application.sales_runtime.snapshot import ConversationRuntimeSnapshot
 from app.leads.campaign.contracts import LeadQueueEntry, LeadQueueStatus
 from app.persistence.errors import InvalidPersistedPayloadError, NotFoundError
@@ -48,6 +53,9 @@ class RecoveryStatus(str, Enum):
     RUNTIME_SNAPSHOT_MISSING = "runtime_snapshot_missing"
     RUNTIME_SNAPSHOT_INVALID = "runtime_snapshot_invalid"
     RUNTIME_SNAPSHOT_VERSION_UNSUPPORTED = "runtime_snapshot_version_unsupported"
+    REQUIRED_PAYLOAD_MISSING = "required_payload_missing"
+    UNSUPPORTED_PAYLOAD_VERSION = "unsupported_payload_version"
+    STATE_RESTORE_FAILED = "state_restore_failed"
     RECOVERY_UNSUPPORTED_FOR_STATE = "recovery_unsupported_for_state"
     RECOVERY_BLOCKED = "recovery_blocked"
 
@@ -75,6 +83,8 @@ class SessionRecoveryDiagnostics:
     turn_count: int | None = None
     orphan_diagnosis: OrphanDiagnosis = OrphanDiagnosis.NONE
     failure_detail: str | None = None
+    missing_required_payload: str | None = None
+    unsupported_payload: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,11 +113,13 @@ class SessionRecoveryService:
         queue_store: SqliteCampaignQueueStore,
         policy_registry: SqlitePolicyRegistry,
         snapshot_store: SqliteRuntimeSnapshotStore | None = None,
+        manifest: SnapshotCompatibilityManifest | None = None,
     ) -> None:
         self._sessions = session_repository
         self._queue = queue_store
         self._policies = policy_registry
         self._snapshots = snapshot_store
+        self._manifest = manifest or default_manifest()
 
     def recover(self, session_id: str) -> SessionRecoveryResult:
         try:
@@ -217,6 +229,53 @@ class SessionRecoveryService:
                     "no runtime snapshot persisted for ACTIVE session",
                 ),
             )
+
+        # Validate manifest compatibility BEFORE processor reconstruction
+        present_keys = frozenset(
+            k for k, _ in snapshot.persisted_contract_payloads
+        )
+        missing = self._manifest.missing_required(present_keys)
+        if missing:
+            missing_key = sorted(missing)[0]
+            return SessionRecoveryResult(
+                status=RecoveryStatus.REQUIRED_PAYLOAD_MISSING,
+                session=session,
+                queue_entry=queue_entry,
+                policy=policy,
+                runtime_snapshot=snapshot,
+                diagnostics=self._with_missing_payload(base_diag, missing_key),
+            )
+
+        # Each present required payload must carry a supported version
+        for key, envelope_json in snapshot.persisted_contract_payloads:
+            if key not in self._manifest.required_for_active_recovery:
+                continue
+            try:
+                # peek version without full deserialization
+                import json as _json
+                env = _json.loads(envelope_json)
+                version = env.get("version")
+            except (ValueError, TypeError):
+                return SessionRecoveryResult(
+                    status=RecoveryStatus.RUNTIME_SNAPSHOT_INVALID,
+                    session=session,
+                    queue_entry=queue_entry,
+                    policy=policy,
+                    runtime_snapshot=snapshot,
+                    diagnostics=self._with_detail(
+                        base_diag, f"payload {key} envelope malformed",
+                    ),
+                )
+            if not self._manifest.is_supported(key, version):
+                return SessionRecoveryResult(
+                    status=RecoveryStatus.UNSUPPORTED_PAYLOAD_VERSION,
+                    session=session,
+                    queue_entry=queue_entry,
+                    policy=policy,
+                    runtime_snapshot=snapshot,
+                    diagnostics=self._with_unsupported_payload(base_diag, key),
+                )
+
         return SessionRecoveryResult(
             status=RecoveryStatus.RECOVERED_ACTIVE,
             session=session,
@@ -241,6 +300,42 @@ class SessionRecoveryService:
             turn_count=diag.turn_count,
             orphan_diagnosis=diag.orphan_diagnosis,
             failure_detail=detail,
+        )
+
+    @staticmethod
+    def _with_missing_payload(
+        diag: SessionRecoveryDiagnostics, payload_key: str,
+    ) -> SessionRecoveryDiagnostics:
+        return SessionRecoveryDiagnostics(
+            session_id=diag.session_id,
+            campaign_id=diag.campaign_id,
+            lead_id=diag.lead_id,
+            stored_revision=diag.stored_revision,
+            policy_id=diag.policy_id,
+            policy_version=diag.policy_version,
+            queue_status=diag.queue_status,
+            turn_count=diag.turn_count,
+            orphan_diagnosis=diag.orphan_diagnosis,
+            failure_detail=f"required payload missing: {payload_key}",
+            missing_required_payload=payload_key,
+        )
+
+    @staticmethod
+    def _with_unsupported_payload(
+        diag: SessionRecoveryDiagnostics, payload_key: str,
+    ) -> SessionRecoveryDiagnostics:
+        return SessionRecoveryDiagnostics(
+            session_id=diag.session_id,
+            campaign_id=diag.campaign_id,
+            lead_id=diag.lead_id,
+            stored_revision=diag.stored_revision,
+            policy_id=diag.policy_id,
+            policy_version=diag.policy_version,
+            queue_status=diag.queue_status,
+            turn_count=diag.turn_count,
+            orphan_diagnosis=diag.orphan_diagnosis,
+            failure_detail=f"unsupported payload version: {payload_key}",
+            unsupported_payload=payload_key,
         )
 
     def _diagnose_orphan(

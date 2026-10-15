@@ -42,6 +42,7 @@ from app.application.sales_runtime.snapshot import (
     ConversationRuntimeSnapshot,
 )
 from app.application.sales_runtime.snapshot_protocol import SnapshotCapable
+from app.application.sales_runtime.manifest import SnapshotCompatibilityManifest
 from app.core.constants import ConversationState
 from app.precall.engine import PreCallIntelligenceEngine
 from app.runtime.chat.bootstrap.contracts import (
@@ -126,6 +127,7 @@ class PersistentSalesRuntime:
         processor_factory: TurnProcessorFactory,
         pcie: PreCallIntelligenceEngine | None = None,
         outcome_engine: OutcomeIntelligenceEngine | None = None,
+        snapshot_manifest: SnapshotCompatibilityManifest | None = None,
     ) -> None:
         self._c = connection
         self.leads = SqliteLeadStore(connection)
@@ -140,6 +142,7 @@ class PersistentSalesRuntime:
         )
         self.recovery = SessionRecoveryService(
             self.sessions, self.queue, self.policies, self.snapshots,
+            manifest=snapshot_manifest,
         )
         self._processor_factory = processor_factory
         self._pcie = pcie or PreCallIntelligenceEngine()
