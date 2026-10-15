@@ -73,9 +73,9 @@ def default_manifest() -> SnapshotCompatibilityManifest:
         ),
         required_for_active_recovery=frozenset({
             BUSINESS_CONVERSATION_KEY,
-            LANGUAGE_PROFILE_KEY,
         }),
         optional_derived=frozenset({
+            LANGUAGE_PROFILE_KEY,
             QUALIFICATION_KEY,
             PROSPECT_INTELLIGENCE_KEY,
             STEERING_KEY,

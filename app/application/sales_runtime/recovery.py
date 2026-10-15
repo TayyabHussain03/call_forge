@@ -246,9 +246,15 @@ class SessionRecoveryService:
                 diagnostics=self._with_missing_payload(base_diag, missing_key),
             )
 
-        # Each present required payload must carry a supported version
+        # Each present payload known to the manifest must carry a supported
+        # version. Required payloads MUST be supported; optional-but-present
+        # payloads cannot carry an unsupported version either (they would
+        # otherwise be silently dropped at restore time, which is unsafe).
+        known_keys = set(self._manifest.required_for_active_recovery) | set(
+            self._manifest.optional_derived
+        )
         for key, envelope_json in snapshot.persisted_contract_payloads:
-            if key not in self._manifest.required_for_active_recovery:
+            if key not in known_keys:
                 continue
             try:
                 # peek version without full deserialization

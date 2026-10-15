@@ -301,11 +301,13 @@ class TestQualificationSerializer:
 
 
 class TestCompatibilityManifest:
-    def test_bci_and_language_are_required(self) -> None:
+    def test_bci_is_required(self) -> None:
         from app.application.sales_runtime.manifest import default_manifest
         m = default_manifest()
         assert m.is_required("bci")
-        assert m.is_required("language_profile")
+        # LanguageProfile is OPTIONAL_DERIVED today — real PTP may not have
+        # observed a language yet when the first snapshot is written.
+        assert not m.is_required("language_profile")
 
     def test_qualification_is_optional_derived_today(self) -> None:
         from app.application.sales_runtime.manifest import default_manifest
@@ -318,7 +320,7 @@ class TestCompatibilityManifest:
         from app.application.sales_runtime.manifest import default_manifest
         m = default_manifest()
         missing = m.missing_required(frozenset({"language_profile"}))
-        assert missing == frozenset({"bci"})
+        assert "bci" in missing
 
     def test_is_supported_matches_version(self) -> None:
         from app.application.sales_runtime.manifest import default_manifest

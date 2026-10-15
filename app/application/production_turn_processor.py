@@ -245,6 +245,8 @@ class ProductionTurnProcessor(TurnProcessor):
         conversation_steering_engine: ConversationSteeringEngine | None = None,
         qualification_configuration: QualificationConfiguration | None = None,
         qualification_evidence_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], QualificationEvidence | None] | None = None,
+        initial_qualification: QualificationSnapshot | None = None,
+        initial_language_profile: LanguageProfile | None = None,
         business_memory_scope: BusinessMemoryScope | None = None,
         knowledge_retrieval_policy: KnowledgeRetrievalPolicy | None = None,
         knowledge_need_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], tuple[KnowledgeNeed, ...]] | None = None,
@@ -320,7 +322,11 @@ class ProductionTurnProcessor(TurnProcessor):
         self._qualification_configuration = qualification_configuration
         self._qualification_evidence = qualification_evidence_provider
         self._qualification_engine = ProgressiveQualificationEngine()
-        self._qualification: QualificationSnapshot | None = None
+        self._qualification: QualificationSnapshot | None = initial_qualification
+        # Last observed language profile — survives per-turn until the next
+        # understanding provider overrides it. Carries recovery continuity so
+        # a Roman Urdu switch before restart is not forgotten.
+        self._last_language_profile: LanguageProfile | None = initial_language_profile
         self._business_memory_scope = business_memory_scope
         self._business_memory_engine = BusinessMentalModelEngine()
         self._business_memory: BusinessMentalModelSnapshot | None = None
@@ -441,26 +447,49 @@ class ProductionTurnProcessor(TurnProcessor):
         """Record an externally completed advisory result without executing it."""
         return self._strategy_buffer.record(insight)
 
-    def export_snapshot(self, session_revision: int):
-        """Export the current authoritative runtime state as a snapshot.
+    @property
+    def language_profile(self):
+        """Most recent authoritative language profile; survives per-turn and restart."""
+        return self._last_language_profile
 
-        See app.application.sales_runtime.snapshot for the full contract.
-        This export captures the FSM-level identity and advisory stage markers
-        that are directly serializable. Full round-trip of nested domain
-        snapshots (BCI/BDE/PQI/prospect intelligence/business memory) requires
-        per-contract JSON serializers to be added later; those payloads are
-        omitted today and recovery will build a fresh processor positioned
-        at the saved FSM state. The honest tradeoff is documented in the
-        Slice 45 report.
+    def export_snapshot(self, session_revision: int):
+        """Export the authoritative runtime state as a ConversationRuntimeSnapshot.
+
+        Emits REAL payloads for BCI, LanguageProfile (when observed), and
+        Qualification (when configured) using the Slice 46 serializers. The
+        snapshot carries FSM state + sales_stage + active_knowledge_base_id
+        + observed DNC/NOT_INTERESTED markers. One committed turn's snapshot
+        is enough to rebuild a semantically equivalent processor.
         """
-        # Local import avoids module-import cycles
+        from app.application.sales_runtime.serializers import (
+            BUSINESS_CONVERSATION_KEY,
+            LANGUAGE_PROFILE_KEY,
+            QUALIFICATION_KEY,
+            BusinessConversationSerializer,
+            LanguageProfileSerializer,
+            QualificationSerializer,
+        )
         from app.application.sales_runtime.snapshot import (
             SNAPSHOT_VERSION_CURRENT,
             ConversationRuntimeSnapshot,
         )
 
-        playbook = self._latest_playbook_guidance
-        active_outcome = None
+        payloads: list[tuple[str, str]] = []
+        payloads.append((
+            BUSINESS_CONVERSATION_KEY,
+            BusinessConversationSerializer().serialize(self._business_conversation),
+        ))
+        if self._last_language_profile is not None:
+            payloads.append((
+                LANGUAGE_PROFILE_KEY,
+                LanguageProfileSerializer().serialize(self._last_language_profile),
+            ))
+        if self._qualification is not None:
+            payloads.append((
+                QUALIFICATION_KEY,
+                QualificationSerializer().serialize(self._qualification),
+            ))
+
         return ConversationRuntimeSnapshot(
             snapshot_version=SNAPSHOT_VERSION_CURRENT,
             session_id=self._context.call_id,
@@ -468,8 +497,8 @@ class ProductionTurnProcessor(TurnProcessor):
             conversation_state=self.current_state,
             sales_stage=self._sales_stage.value if self._sales_stage else None,
             active_knowledge_base_id=self._active_knowledge_base_id,
-            last_pipeline_outcome=active_outcome,
-            persisted_contract_payloads=(),
+            last_pipeline_outcome=None,
+            persisted_contract_payloads=tuple(payloads),
             is_dnc_observed=False,
             is_not_interested_observed=False,
         )
@@ -512,7 +541,10 @@ class ProductionTurnProcessor(TurnProcessor):
         budget = self._budget_state()
         strategy = None
         supervisor_insight = None
-        language_profile = None
+        # Seed language with last observed value so recovery/mid-conversation
+        # restart retains language preference even if this turn's understanding
+        # provider yields no language signal.
+        language_profile = self._last_language_profile
         if priority == TrustedPriorityOutcome.NONE:
             supervisor_insight = self._strategy_buffer.consume_for(
                 turn.sequence_number
@@ -534,7 +566,9 @@ class ProductionTurnProcessor(TurnProcessor):
                 turn, preliminary_context
             )
             if understanding is not None:
-                language_profile = understanding.language_profile
+                if understanding.language_profile is not None:
+                    language_profile = understanding.language_profile
+                    self._last_language_profile = language_profile
             if self._business_conversation_evidence is not None:
                 business_evidence = self._business_conversation_evidence(
                     turn, preliminary_context, understanding
