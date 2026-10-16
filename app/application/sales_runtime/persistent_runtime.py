@@ -392,6 +392,10 @@ class PersistentSalesRuntime:
             )
 
         # 3. Process turn OUTSIDE write transaction
+        # Slice 51B — capture pre-turn processor coverage so a failed
+        # or stale commit can restore it. Prevents speculative coverage
+        # from leaking into a subsequent turn's snapshot export.
+        pre_turn_coverage = getattr(processor, "_discussion_coverage", None)
         coordinated = CoordinatedUserTurn(
             turn_id=f"chat_{session_id}_t{turn_sequence}",
             sequence_number=turn_sequence,
@@ -428,26 +432,37 @@ class PersistentSalesRuntime:
         snapshot = self._export_snapshot_if_capable(
             processor, session_id, updated_revision_target=session.revision + 1,
         )
-        with self._c.transaction():
-            committed = self.sessions.update(updated)
-            if snapshot is not None:
-                # Rebind snapshot to the committed revision for consistency
-                snapshot = replace(
-                    snapshot, source_session_revision=committed.revision,
+        try:
+            with self._c.transaction():
+                committed = self.sessions.update(updated)
+                if snapshot is not None:
+                    # Rebind snapshot to the committed revision for consistency
+                    snapshot = replace(
+                        snapshot, source_session_revision=committed.revision,
+                    )
+                    self.snapshots.save(snapshot)
+                pipeline_outcome = (
+                    output.pipeline_outcome.value if output.pipeline_outcome else None
                 )
-                self.snapshots.save(snapshot)
-            pipeline_outcome = (
-                output.pipeline_outcome.value if output.pipeline_outcome else None
-            )
-            self.turn_idempotency.record(CommittedTurnRecord(
-                session_id=session_id,
-                turn_request_id=turn_request_id,
-                turn_sequence=turn_sequence,
-                committed_revision=committed.revision,
-                agent_response=output.rendered_response.text,
-                conversation_terminal=output.conversation_terminal,
-                pipeline_outcome=pipeline_outcome,
-            ))
+                self.turn_idempotency.record(CommittedTurnRecord(
+                    session_id=session_id,
+                    turn_request_id=turn_request_id,
+                    turn_sequence=turn_sequence,
+                    committed_revision=committed.revision,
+                    agent_response=output.rendered_response.text,
+                    conversation_terminal=output.conversation_terminal,
+                    pipeline_outcome=pipeline_outcome,
+                ))
+        except Exception:
+            # Slice 51B — commit failed (stale revision, idempotency
+            # conflict, DB error). Restore the processor's in-memory
+            # discussion coverage so speculative state cannot leak into
+            # the next turn's snapshot export.
+            if pre_turn_coverage is not None and hasattr(
+                processor, "_discussion_coverage",
+            ):
+                processor._discussion_coverage = pre_turn_coverage
+            raise
 
         return PersistentTurnResult(
             session_id=session_id,

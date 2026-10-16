@@ -1011,30 +1011,25 @@ class ProductionTurnProcessor(TurnProcessor):
         )
 
     def _auto_advance_discussion_coverage(self, turn, plan) -> None:
-        """Record coverage automatically from a committed plan's metadata.
-
-        Deterministic depth mapping (never downgrades historical max):
-            SHORT    → BRIEF
-            MODERATE → EXPLAINED
-            DETAILED → DETAILED
-        If strategy is SUPPRESS or NO_PRIOR_COVERAGE with no concept_id,
-        no advance happens.
+        """Record coverage from the plan's EXPLICIT delivered-explanation
+        metadata. Slice 51A used a ResponseLength → ExplanationDepth
+        heuristic that was semantically unsafe (a long response could be a
+        question or clarification, not an explanation). Slice 51B replaces
+        that with an explicit `ExplainedConcept` field the planner emits
+        ONLY when it is genuinely delivering an explanation. Suppress
+        plans, question-only turns, greetings, acknowledgements, and
+        failed re-explanations never carry this field and therefore never
+        advance coverage.
         """
-        concept_id = getattr(plan, "explanation_concept_id", None)
-        if not concept_id:
+        from app.conversation.participant.contracts import ExplainedConcept
+        delivered = getattr(plan, "delivered_explanation", None)
+        if delivered is None or not isinstance(delivered, ExplainedConcept):
             return
         if self._active_participant is None:
             return
-        from app.conversation.participant.contracts import ExplanationDepth
-        length = plan.response_length
-        from app.conversation.response_planning.contracts import ResponseLength
-        _length_to_depth = {
-            ResponseLength.SHORT: ExplanationDepth.BRIEF,
-            ResponseLength.MODERATE: ExplanationDepth.EXPLAINED,
-            ResponseLength.DETAILED: ExplanationDepth.DETAILED,
-        }
-        depth = _length_to_depth.get(length, ExplanationDepth.MENTIONED)
-        self.record_discussion_coverage(concept_id, depth, turn.turn_id)
+        self.record_discussion_coverage(
+            delivered.concept_id, delivered.delivered_depth, turn.turn_id,
+        )
 
     def _consultative_decision(
         self,

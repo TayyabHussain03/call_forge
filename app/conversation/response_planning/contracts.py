@@ -265,6 +265,11 @@ class ResponsePlan:
     explanation_concept_id: str | None = None
     prior_explanation_depth: object | None = None
     participant_reference_id: str | None = None
+    # Slice 51B — explicit delivered-explanation metadata. ONLY populated
+    # when the planner genuinely delivers an explanation (not SUPPRESS, not
+    # question-only turns). Replaces the Slice 51A ResponseLength heuristic.
+    # Downstream auto-coverage records coverage only when this is non-None.
+    delivered_explanation: object | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)

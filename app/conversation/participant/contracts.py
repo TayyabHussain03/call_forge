@@ -231,3 +231,29 @@ class ReExplanationDecision:
     def __post_init__(self) -> None:
         if not self.reason or len(self.reason) > 200:
             raise ValueError("reason must be 1-200 chars")
+
+
+@dataclass(frozen=True)
+class ExplainedConcept:
+    """Explicit delivered-explanation metadata the planner emits.
+
+    Populated ONLY when the planner genuinely delivers an explanation
+    for a concept — never for SUPPRESS plans, pure questions, greetings,
+    or acknowledgements. This is the authoritative source for
+    DiscussionCoverage auto-advance; ResponseLength is NOT a proxy for
+    delivered depth.
+    """
+
+    concept_id: str
+    delivered_depth: ExplanationDepth
+
+    def __post_init__(self) -> None:
+        if not self.concept_id or len(self.concept_id) > 120:
+            raise ValueError("concept_id must be 1-120 chars")
+        if not isinstance(self.delivered_depth, ExplanationDepth):
+            raise TypeError("delivered_depth must be ExplanationDepth")
+        if self.delivered_depth == ExplanationDepth.NONE:
+            raise ValueError(
+                "delivered_depth NONE is invalid — do not emit "
+                "ExplainedConcept for suppressed/question-only turns"
+            )

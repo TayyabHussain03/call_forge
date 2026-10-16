@@ -279,12 +279,14 @@ def _make_runtime(db_path, factory=None):
 
 
 class TestAutoCoverageAdvance:
-    def test_no_concept_id_no_coverage_advance(self, db_path) -> None:
-        """A plan without explanation_concept_id does NOT advance coverage.
+    def test_no_delivered_explanation_no_coverage_advance(self, db_path) -> None:
+        """A plan without delivered_explanation does NOT advance coverage.
 
-        This is the default behavior for every existing turn — the planner
-        only populates concept_id when upstream wires it, which the Brain
-        does not yet do. So existing production turns remain unchanged.
+        Slice 51B replaced the Slice 51A ResponseLength heuristic with an
+        explicit `ExplainedConcept` field the planner emits ONLY when it
+        genuinely delivers an explanation. Normal turns (greetings,
+        questions, suppressed concepts) carry no delivered_explanation and
+        therefore never auto-advance coverage.
         """
         evidence = (
             ParticipantContinuityEvidence(
