@@ -336,9 +336,17 @@ class ResponsePlanner:
         resume: bool = False,
         pending: PendingConversationIntent | None = None,
     ) -> ResponsePlan:
+        # Slice 50 — participant-aware strategy maps to a bounded response
+        # length when a strategy is supplied. If the planner's existing
+        # computation already chose a longer length (e.g. a DEEPEN request
+        # on top of DETAILED discovery), the longer length wins to avoid
+        # downgrading a well-planned response.
+        effective_length = _apply_re_explanation_length(
+            length, planning_input.re_explanation_strategy,
+        )
         return ResponsePlan(
             communicative_goal=goal,
-            response_length=length,
+            response_length=effective_length,
             tone=planning_input.tone,
             acknowledgement=acknowledgement,
             question_strategy=question,
@@ -360,6 +368,10 @@ class ResponsePlanner:
             qualification=planning_input.qualification,
             business_memory=planning_input.business_memory,
             retrieval_plan=planning_input.retrieval_plan,
+            re_explanation_strategy=planning_input.re_explanation_strategy,
+            explanation_concept_id=planning_input.explanation_concept_id,
+            prior_explanation_depth=planning_input.prior_explanation_depth,
+            participant_reference_id=planning_input.participant_reference_id,
         )
 
 
@@ -367,6 +379,55 @@ def _active_pending(
     pending: PendingConversationIntent | None,
 ) -> PendingConversationIntent | None:
     return pending if pending is not None and pending.active else None
+
+
+# Slice 50 — strategy → length mapping. Deterministic. The mapping NEVER
+# downgrades a longer existing length (SUPPRESS keeps whatever the planner
+# chose because SUPPRESS means "don't re-explain", not "say less").
+#
+#     CONCISE_RECAP   → SHORT      (recap is intentionally brief)
+#     FULL_RE_EXPLAIN → STANDARD   (new participant needs real coverage)
+#     DEEPEN          → DETAILED   (user asked for depth)
+#     SIMPLIFY        → SHORT      (lower cognitive load)
+#     SUPPRESS        → unchanged  (planner's existing choice stands)
+#     NO_PRIOR_COVERAGE → unchanged (normal first-time explanation)
+def _apply_re_explanation_length(
+    current_length,  # ResponseLength
+    strategy,
+):
+    if strategy is None:
+        return current_length
+    try:
+        from app.conversation.participant.contracts import ReExplanationStrategy
+        from app.conversation.response_planning.contracts import ResponseLength
+    except ImportError:
+        return current_length
+    if not isinstance(strategy, ReExplanationStrategy):
+        return current_length
+    _order = {
+        ResponseLength.SHORT: 0,
+        ResponseLength.MODERATE: 1,
+        ResponseLength.DETAILED: 2,
+    }
+    mapping = {
+        ReExplanationStrategy.CONCISE_RECAP: ResponseLength.SHORT,
+        ReExplanationStrategy.FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT: ResponseLength.MODERATE,
+        ReExplanationStrategy.DEEPEN: ResponseLength.DETAILED,
+        ReExplanationStrategy.SIMPLIFY: ResponseLength.SHORT,
+    }
+    desired = mapping.get(strategy)
+    if desired is None:
+        return current_length
+    # For DEEPEN, always honor the deeper mapping (user explicitly asked).
+    # For SIMPLIFY/CONCISE_RECAP, honor the shorter mapping (participant intent).
+    # For FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT, only upgrade if planner chose shorter.
+    if strategy == ReExplanationStrategy.DEEPEN:
+        return desired
+    if strategy == ReExplanationStrategy.FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT:
+        if _order.get(current_length, 0) < _order.get(desired, 0):
+            return desired
+        return current_length
+    return desired
 
 
 def _ordinary_length(need: ExplanationNeed) -> ResponseLength:

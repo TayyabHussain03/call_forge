@@ -194,6 +194,14 @@ class ResponsePlanningInput:
     qualification: object | None = None
     business_memory: object | None = None
     retrieval_plan: object | None = None
+    # Slice 50 — participant-aware response shaping. Additive, bounded,
+    # typed. Deterministic strategy decided upstream; planner only maps it
+    # to its own existing controls (depth, acknowledgement, etc.).
+    re_explanation_strategy: object | None = None
+    explanation_concept_id: str | None = None
+    prior_explanation_depth: object | None = None
+    participant_reference_id: str | None = None
+    catalog_request: bool = False
 
     def __post_init__(self) -> None:
         if len(self.current_prospect_message) > 2000:
@@ -214,6 +222,14 @@ class ResponsePlanningInput:
         _validate_qualification(self.qualification)
         _validate_business_memory(self.business_memory)
         _validate_retrieval_plan(self.retrieval_plan)
+        if self.explanation_concept_id is not None:
+            if not self.explanation_concept_id or len(self.explanation_concept_id) > 120:
+                raise ValueError("explanation_concept_id must be 1-120 chars")
+        if self.participant_reference_id is not None:
+            if not self.participant_reference_id or len(self.participant_reference_id) > 120:
+                raise ValueError("participant_reference_id must be 1-120 chars")
+        if not isinstance(self.catalog_request, bool):
+            raise TypeError("catalog_request must be bool")
 
 
 @dataclass(frozen=True)
@@ -243,6 +259,12 @@ class ResponsePlan:
     qualification: object | None = None
     business_memory: object | None = None
     retrieval_plan: object | None = None
+    # Slice 50 — plan passes strategy/concept forward so downstream GRC
+    # and realization can honor participant-aware intent.
+    re_explanation_strategy: object | None = None
+    explanation_concept_id: str | None = None
+    prior_explanation_depth: object | None = None
+    participant_reference_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)
