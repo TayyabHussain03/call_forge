@@ -993,6 +993,14 @@ class ProductionTurnProcessor(TurnProcessor):
             RecentTurn(turn.turn_id, TurnSpeaker.USER, turn.utterance[:300]),
             RecentTurn(turn.turn_id, TurnSpeaker.AGENT, rendered.text[:300]),
         )[-8:]
+        # Slice 51 — automatic participant-aware DiscussionCoverage advance.
+        # If the plan carries an explanation_concept_id and an active
+        # participant exists, record coverage at the depth implied by the
+        # plan's response_length. This happens BEFORE the processor returns,
+        # so the subsequent snapshot export (done by PersistentSalesRuntime
+        # inside the atomic transaction) captures the updated coverage.
+        # Monotonicity is preserved by DiscussionCoverageState.depth_for().
+        self._auto_advance_discussion_coverage(turn, plan)
         return CoordinatedTurnOutput(
             turn.turn_id,
             plan,
@@ -1001,6 +1009,32 @@ class ProductionTurnProcessor(TurnProcessor):
             authoritative_result,
             terminal,
         )
+
+    def _auto_advance_discussion_coverage(self, turn, plan) -> None:
+        """Record coverage automatically from a committed plan's metadata.
+
+        Deterministic depth mapping (never downgrades historical max):
+            SHORT    → BRIEF
+            MODERATE → EXPLAINED
+            DETAILED → DETAILED
+        If strategy is SUPPRESS or NO_PRIOR_COVERAGE with no concept_id,
+        no advance happens.
+        """
+        concept_id = getattr(plan, "explanation_concept_id", None)
+        if not concept_id:
+            return
+        if self._active_participant is None:
+            return
+        from app.conversation.participant.contracts import ExplanationDepth
+        length = plan.response_length
+        from app.conversation.response_planning.contracts import ResponseLength
+        _length_to_depth = {
+            ResponseLength.SHORT: ExplanationDepth.BRIEF,
+            ResponseLength.MODERATE: ExplanationDepth.EXPLAINED,
+            ResponseLength.DETAILED: ExplanationDepth.DETAILED,
+        }
+        depth = _length_to_depth.get(length, ExplanationDepth.MENTIONED)
+        self.record_discussion_coverage(concept_id, depth, turn.turn_id)
 
     def _consultative_decision(
         self,
