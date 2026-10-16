@@ -252,6 +252,12 @@ class ProductionTurnProcessor(TurnProcessor):
         initial_active_participant=None,
         initial_archived_participants=(),
         initial_discussion_coverage=None,
+        # Slice 51C — live re-explanation intent + concept provider seams.
+        # Both are optional/additive. When supplied, the processor
+        # automatically resolves ReExplanationStrategy and emits
+        # delivered_explanation on the plan — no manual caller injection.
+        re_explanation_intent_provider=None,
+        explanation_concept_provider=None,
         business_memory_scope: BusinessMemoryScope | None = None,
         knowledge_retrieval_policy: KnowledgeRetrievalPolicy | None = None,
         knowledge_need_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], tuple[KnowledgeNeed, ...]] | None = None,
@@ -359,6 +365,8 @@ class ProductionTurnProcessor(TurnProcessor):
             initial_context.call_id, start=_factory_start,
         )
         self._latest_participant_decision = None
+        self._re_explanation_intent_provider = re_explanation_intent_provider
+        self._explanation_concept_provider = explanation_concept_provider
         self._business_memory_scope = business_memory_scope
         self._business_memory_engine = BusinessMentalModelEngine()
         self._business_memory: BusinessMentalModelSnapshot | None = None
@@ -718,6 +726,9 @@ class ProductionTurnProcessor(TurnProcessor):
         budget = self._budget_state()
         strategy = None
         supervisor_insight = None
+        # Slice 51C — ensure understanding is defined on the priority path
+        # too so participant-aware auto-threading can safely reference it.
+        understanding = None
         # Seed language with last observed value so recovery/mid-conversation
         # restart retains language preference even if this turn's understanding
         # provider yields no language signal.
@@ -928,6 +939,11 @@ class ProductionTurnProcessor(TurnProcessor):
                     if item.evidence_id in escalation.evidence_ids
                 ),
             )
+        # Slice 51C — auto-resolve participant-aware re-explanation metadata
+        # BEFORE the planner runs so the planner's input is already enriched.
+        participant_fields = self._resolve_participant_aware_planner_fields(
+            turn, understanding,
+        )
         plan = self._planner.plan(
             ResponsePlanningInput(
                 authoritative_state=self._orchestrator.current_state,
@@ -952,8 +968,22 @@ class ProductionTurnProcessor(TurnProcessor):
                 qualification=self._qualification,
                 business_memory=self._business_memory,
                 retrieval_plan=self._retrieval_plan,
+                re_explanation_strategy=participant_fields["strategy"],
+                explanation_concept_id=participant_fields["concept_id"],
+                prior_explanation_depth=participant_fields["prior_depth"],
+                participant_reference_id=participant_fields["participant_ref"],
             )
         )
+        # Attach delivered_explanation if the strategy indicates an
+        # explanation is being delivered. ResponsePlanner currently passes
+        # through delivered_explanation from input; emission authority
+        # lives here until planner internals learn to decide depth.
+        delivered = self._compute_delivered_explanation(
+            plan, participant_fields,
+        )
+        if delivered is not None:
+            from dataclasses import replace as _replace
+            plan = _replace(plan, delivered_explanation=delivered)
         rendered = self._renderer.render(
             ResponseRenderInput(
                 plan=plan,
@@ -1009,6 +1039,99 @@ class ProductionTurnProcessor(TurnProcessor):
             authoritative_result,
             terminal,
         )
+
+    def _unknown_participant_state_default(self):
+        from app.conversation.participant.contracts import (
+            ParticipantContinuityState,
+        )
+        return ParticipantContinuityState.UNKNOWN
+
+    def _resolve_participant_aware_planner_fields(self, turn, understanding) -> dict:
+        """Auto-derive the four participant-aware ResponsePlanningInput
+        fields when both an intent provider and a concept provider are
+        wired. Fail-closed on provider errors — degrade to no strategy.
+        """
+        from app.conversation.participant.policy import (
+            ReExplanationIntent, ReExplanationPolicy,
+        )
+        fields = {
+            "strategy": None,
+            "concept_id": None,
+            "prior_depth": None,
+            "participant_ref": None,
+        }
+        if self._active_participant is None:
+            return fields
+        fields["participant_ref"] = self._active_participant.reference_id
+        # Resolve concept id via provider
+        concept_id = None
+        if self._explanation_concept_provider is not None:
+            try:
+                concept_id = self._explanation_concept_provider(
+                    turn, understanding,
+                )
+            except Exception:
+                concept_id = None
+        if not concept_id:
+            return fields
+        fields["concept_id"] = concept_id
+        # Resolve intent via provider (safe fallback = NONE)
+        intent = ReExplanationIntent.NONE
+        if self._re_explanation_intent_provider is not None:
+            try:
+                proposed = self._re_explanation_intent_provider(
+                    turn, understanding,
+                )
+                if isinstance(proposed, ReExplanationIntent):
+                    intent = proposed
+            except Exception:
+                intent = ReExplanationIntent.NONE
+        # Compute prior depth and strategy via existing APIs
+        fields["prior_depth"] = self._discussion_coverage.depth_for(
+            self._active_participant.reference_id, concept_id,
+        )
+        decision = ReExplanationPolicy().decide(
+            self._latest_participant_decision.state
+            if self._latest_participant_decision is not None
+            else self._unknown_participant_state_default(),
+            self._active_participant.reference_id,
+            concept_id,
+            self._discussion_coverage,
+            intent=intent,
+        )
+        fields["strategy"] = decision.strategy
+        return fields
+
+    def _compute_delivered_explanation(self, plan, fields: dict):
+        """Compute ExplainedConcept the plan actually delivers, mapped
+        from the authoritative strategy — NOT from ResponseLength.
+
+        Rules (deliberate, documented):
+            NO_PRIOR_COVERAGE                → EXPLAINED
+            FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT → EXPLAINED
+            CONCISE_RECAP                    → BRIEF
+            DEEPEN                           → DETAILED
+            SIMPLIFY                         → BRIEF
+            SUPPRESS                         → None (no delivery)
+        """
+        from app.conversation.participant.contracts import (
+            ExplainedConcept, ExplanationDepth, ReExplanationStrategy,
+        )
+        concept_id = fields.get("concept_id")
+        strategy = fields.get("strategy")
+        if not concept_id or strategy is None:
+            return None
+        mapping = {
+            ReExplanationStrategy.NO_PRIOR_COVERAGE: ExplanationDepth.EXPLAINED,
+            ReExplanationStrategy.FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT: ExplanationDepth.EXPLAINED,
+            ReExplanationStrategy.CONCISE_RECAP: ExplanationDepth.BRIEF,
+            ReExplanationStrategy.DEEPEN: ExplanationDepth.DETAILED,
+            ReExplanationStrategy.SIMPLIFY: ExplanationDepth.BRIEF,
+        }
+        depth = mapping.get(strategy)
+        if depth is None:
+            return None  # SUPPRESS or unknown — no delivery event
+        return ExplainedConcept(concept_id=concept_id, delivered_depth=depth)
 
     def _auto_advance_discussion_coverage(self, turn, plan) -> None:
         """Record coverage from the plan's EXPLICIT delivered-explanation

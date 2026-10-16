@@ -239,14 +239,29 @@ class ReExplanationPolicy:
                 prior_depth=prior_depth,
                 reason="same participant requested recap",
             )
-        if intent == ReExplanationIntent.DIRECT_SERVICE_QUESTION and is_new_participant:
-            return ReExplanationDecision(
-                strategy=ReExplanationStrategy.FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT,
-                concept_id=concept_id,
-                participant_reference_id=active_reference_id,
-                prior_depth=prior_depth,
-                reason="new participant asked a direct service question",
-            )
+        if intent == ReExplanationIntent.DIRECT_SERVICE_QUESTION:
+            if is_new_participant:
+                return ReExplanationDecision(
+                    strategy=ReExplanationStrategy.FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT,
+                    concept_id=concept_id,
+                    participant_reference_id=active_reference_id,
+                    prior_depth=prior_depth,
+                    reason="new participant asked a direct service question",
+                )
+            # Slice 51C — same-participant explicit direct question must
+            # never be swallowed by ordinary repetition suppression. If
+            # the participant has already received an explanation, answer
+            # with a concise recap. If no prior coverage, let the
+            # NO_PRIOR_COVERAGE branch below handle a first-time explain.
+            if prior_depth != ExplanationDepth.NONE:
+                return ReExplanationDecision(
+                    strategy=ReExplanationStrategy.CONCISE_RECAP,
+                    concept_id=concept_id,
+                    participant_reference_id=active_reference_id,
+                    prior_depth=prior_depth,
+                    reason="same participant explicitly re-asked a direct service question",
+                )
+            # fall through to NO_PRIOR_COVERAGE path below
 
         # No intent signal
         if prior_depth == ExplanationDepth.NONE and not heard_elsewhere:
