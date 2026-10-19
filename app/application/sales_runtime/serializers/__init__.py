@@ -25,6 +25,10 @@ from app.application.sales_runtime.serializers.participant import (
     DiscussionCoverageSerializer,
     ParticipantStateSerializer,
 )
+from app.application.sales_runtime.serializers.participant_prospect import (
+    PARTICIPANT_PROSPECT_ARCHIVE_KEY,
+    ParticipantProspectArchiveSerializer,
+)
 from app.application.sales_runtime.serializers.prospect import (
     PROSPECT_INTELLIGENCE_KEY,
     ProspectIntelligenceSerializer,
@@ -51,4 +55,6 @@ __all__ = [
     "ParticipantStateSerializer",
     "DISCUSSION_COVERAGE_KEY",
     "DiscussionCoverageSerializer",
+    "PARTICIPANT_PROSPECT_ARCHIVE_KEY",
+    "ParticipantProspectArchiveSerializer",
 ]

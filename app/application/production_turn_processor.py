@@ -258,6 +258,11 @@ class ProductionTurnProcessor(TurnProcessor):
         # delivered_explanation on the plan — no manual caller injection.
         re_explanation_intent_provider=None,
         explanation_concept_provider=None,
+        # Slice 51D — per-participant Prospect Intelligence archive.
+        # Keyed by participant_reference_id; empty by default. Carries
+        # participant-scoped prospect state across restart so Person B
+        # cannot inherit Person A's interest/objection/busy/role.
+        initial_participant_prospect_archive=(),
         business_memory_scope: BusinessMemoryScope | None = None,
         knowledge_retrieval_policy: KnowledgeRetrievalPolicy | None = None,
         knowledge_need_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], tuple[KnowledgeNeed, ...]] | None = None,
@@ -367,6 +372,9 @@ class ProductionTurnProcessor(TurnProcessor):
         self._latest_participant_decision = None
         self._re_explanation_intent_provider = re_explanation_intent_provider
         self._explanation_concept_provider = explanation_concept_provider
+        self._participant_prospect_archive: tuple = tuple(
+            initial_participant_prospect_archive,
+        )
         self._business_memory_scope = business_memory_scope
         self._business_memory_engine = BusinessMentalModelEngine()
         self._business_memory: BusinessMentalModelSnapshot | None = None
@@ -508,6 +516,16 @@ class ProductionTurnProcessor(TurnProcessor):
         return self._discussion_coverage
 
     @property
+    def participant_prospect_archive(self):
+        """Per-participant ProspectIntelligenceSnapshot archive.
+
+        Tuple of (participant_reference_id, snapshot). Person B must never
+        inherit from any entry here — these are archived snapshots keyed
+        by the retiring participant's reference ID.
+        """
+        return self._participant_prospect_archive
+
+    @property
     def latest_participant_decision(self):
         """Policy decision made on the most recent turn carrying evidence."""
         return self._latest_participant_decision
@@ -599,7 +617,18 @@ class ProductionTurnProcessor(TurnProcessor):
                 self._archived_participant_states = (
                     *self._archived_participant_states, archived,
                 )
+                # Slice 51D — archive the retiring participant's Prospect
+                # Intelligence under their reference_id so Person B does
+                # NOT inherit Person A's interest/objection/busy/role.
+                self._participant_prospect_archive = (
+                    *self._participant_prospect_archive,
+                    (self._active_participant.reference_id, self._prospect_intelligence),
+                )
             self._active_participant = decision.active_participant
+            # New participant: fresh ProspectIntelligence — no inheritance
+            # of Person A's personal signals. Business/BCI state remains
+            # shared via its own channel.
+            self._prospect_intelligence = ProspectIntelligenceSnapshot()
             # New participant: reset per-turn language snapshot so provider
             # of next turn can refresh it from their utterance.
             self._last_language_profile = None
@@ -622,12 +651,14 @@ class ProductionTurnProcessor(TurnProcessor):
             BUSINESS_CONVERSATION_KEY,
             DISCUSSION_COVERAGE_KEY,
             LANGUAGE_PROFILE_KEY,
+            PARTICIPANT_PROSPECT_ARCHIVE_KEY,
             PARTICIPANT_STATE_KEY,
             PROSPECT_INTELLIGENCE_KEY,
             QUALIFICATION_KEY,
             BusinessConversationSerializer,
             DiscussionCoverageSerializer,
             LanguageProfileSerializer,
+            ParticipantProspectArchiveSerializer,
             ParticipantStateSerializer,
             ProspectIntelligenceSerializer,
             QualificationSerializer,
@@ -661,6 +692,13 @@ class ProductionTurnProcessor(TurnProcessor):
                 PARTICIPANT_STATE_KEY,
                 ParticipantStateSerializer().serialize(
                     self._active_participant, self._archived_participant_states,
+                ),
+            ))
+        if self._participant_prospect_archive:
+            payloads.append((
+                PARTICIPANT_PROSPECT_ARCHIVE_KEY,
+                ParticipantProspectArchiveSerializer().serialize(
+                    self._participant_prospect_archive,
                 ),
             ))
         # Only emit coverage when non-empty — avoids empty-payload churn
