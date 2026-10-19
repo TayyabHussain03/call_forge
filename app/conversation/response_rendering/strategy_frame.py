@@ -24,8 +24,7 @@ from app.conversation.response_rendering.contracts import (
 from app.conversation.response_rendering.renderer import ResponseRenderer
 
 
-# Deterministic framings. One short natural prefix per strategy.
-# These must remain stable because tests assert their presence.
+# Deterministic English framings. One short natural prefix per strategy.
 STRATEGY_FRAMINGS: dict[ReExplanationStrategy, str] = {
     ReExplanationStrategy.CONCISE_RECAP: "Quick recap:",
     ReExplanationStrategy.SIMPLIFY: "In simpler terms:",
@@ -35,6 +34,29 @@ STRATEGY_FRAMINGS: dict[ReExplanationStrategy, str] = {
     ),
     # SUPPRESS, NO_PRIOR_COVERAGE: no framing — base renderer output stands.
 }
+
+
+# Roman Urdu / mixed framings. Used when LanguageProfile.primary_language
+# is "ur" so we don't put an English prefix in front of a Roman Urdu reply.
+STRATEGY_FRAMINGS_URDU: dict[ReExplanationStrategy, str] = {
+    ReExplanationStrategy.CONCISE_RECAP: "Short recap:",
+    ReExplanationStrategy.SIMPLIFY: "Simple words mein:",
+    ReExplanationStrategy.DEEPEN: "Thora detail mein:",
+    ReExplanationStrategy.FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT: (
+        "Aapko context de doon:"
+    ),
+}
+
+
+def _language_scoped_framing_map(primary_language: str | None) -> dict:
+    """Pick the right framing table from the plan's language profile.
+
+    Language is OBSERVED/trusted (set by the understanding provider from
+    actual utterance signals) — never inferred from role or name.
+    """
+    if primary_language and primary_language.lower() in ("ur", "urdu"):
+        return STRATEGY_FRAMINGS_URDU
+    return STRATEGY_FRAMINGS
 
 
 class StrategyAwareResponseRenderer(ResponseRenderer):
@@ -53,13 +75,21 @@ class StrategyAwareResponseRenderer(ResponseRenderer):
         strategy = getattr(render_input.plan, "re_explanation_strategy", None)
         if not isinstance(strategy, ReExplanationStrategy):
             return base
-        framing = STRATEGY_FRAMINGS.get(strategy)
+        language_profile = getattr(render_input.plan, "language_profile", None)
+        primary = getattr(language_profile, "primary_language", None)
+        framing_map = _language_scoped_framing_map(primary)
+        framing = framing_map.get(strategy)
         if not framing:
             return base
         framed_text = f"{framing} {base.text}"
         return replace(base, text=framed_text)
 
 
-def framing_for(strategy: ReExplanationStrategy) -> str | None:
-    """Public access to the strategy → framing map, for test assertions."""
-    return STRATEGY_FRAMINGS.get(strategy)
+def framing_for(
+    strategy: ReExplanationStrategy, primary_language: str | None = None,
+) -> str | None:
+    """Public access to the strategy → framing map, for test assertions.
+
+    Returns the language-scoped framing when `primary_language` is set.
+    """
+    return _language_scoped_framing_map(primary_language).get(strategy)

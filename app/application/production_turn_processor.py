@@ -982,6 +982,14 @@ class ProductionTurnProcessor(TurnProcessor):
         participant_fields = self._resolve_participant_aware_planner_fields(
             turn, understanding,
         )
+        # Slice 51G — strategy shapes explanation_need so the planner's
+        # own length/complexity calculation genuinely differs across
+        # SIMPLIFY / DEEPEN / CONCISE_RECAP, not merely the prefix. Fallback
+        # to the category-driven default when no strategy is supplied.
+        base_need = _explanation_need(turn.conversation_category)
+        effective_need = _strategy_shaped_need(
+            base_need, participant_fields["strategy"],
+        )
         plan = self._planner.plan(
             ResponsePlanningInput(
                 authoritative_state=self._orchestrator.current_state,
@@ -993,7 +1001,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 conversation_category=turn.conversation_category,
                 addressee_status=turn.addressee_status,
                 interruption=turn.interruption,
-                explanation_need=_explanation_need(turn.conversation_category),
+                explanation_need=effective_need,
                 escalation_decision=escalation,
                 language_profile=language_profile,
                 consultative_decision=consultative,
@@ -1556,3 +1564,39 @@ def _explanation_need(category: InterruptionCategory) -> ExplanationNeed:
     if category in {InterruptionCategory.QUESTION, InterruptionCategory.OBJECTION}:
         return ExplanationNeed.STANDARD
     return ExplanationNeed.SIMPLE
+
+
+def _strategy_shaped_need(base: ExplanationNeed, strategy):
+    """Slice 51G — strategy overrides ExplanationNeed so the planner's own
+    length calculation genuinely differs across simplify/deepen/recap.
+
+    Mapping (semantic, not merely length):
+        SIMPLIFY         → ExplanationNeed.SIMPLE   (less content, simpler shape)
+        CONCISE_RECAP    → ExplanationNeed.SIMPLE   (recap is intentionally brief)
+        DEEPEN           → ExplanationNeed.COMPLEX  (planner may use detailed length)
+        FULL_RE_EXPLAIN  → ExplanationNeed.STANDARD (orient the new person)
+        SUPPRESS         → base (don't re-explain the concept, but keep normal
+                                 behavior for whatever the planner is now doing)
+        NO_PRIOR_COVERAGE → base (first-time explanation uses category default)
+        None              → base
+
+    This runs BEFORE the planner so planner.plan() sees the adjusted need
+    and makes a semantically different choice. Combined with Slice 50's
+    _apply_re_explanation_length, both the ExplanationNeed-driven base
+    length AND the strategy-aware post-mapping agree on the final length.
+    """
+    try:
+        from app.conversation.participant.contracts import ReExplanationStrategy
+    except ImportError:
+        return base
+    if not isinstance(strategy, ReExplanationStrategy):
+        return base
+    if strategy == ReExplanationStrategy.SIMPLIFY:
+        return ExplanationNeed.SIMPLE
+    if strategy == ReExplanationStrategy.CONCISE_RECAP:
+        return ExplanationNeed.SIMPLE
+    if strategy == ReExplanationStrategy.DEEPEN:
+        return ExplanationNeed.COMPLEX
+    if strategy == ReExplanationStrategy.FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT:
+        return ExplanationNeed.STANDARD
+    return base
