@@ -396,6 +396,12 @@ class PersistentSalesRuntime:
         # or stale commit can restore it. Prevents speculative coverage
         # from leaking into a subsequent turn's snapshot export.
         pre_turn_coverage = getattr(processor, "_discussion_coverage", None)
+        # Slice 51I — Model B (committed-turn semantics): roll back
+        # reasoning-call budget alongside coverage so the same logical
+        # history produces the same budget regardless of process
+        # lifetime. In-process failure + continue and failure + restart
+        # must yield identical remaining allowance.
+        pre_turn_reasoning_calls = getattr(processor, "_reasoning_calls", None)
         coordinated = CoordinatedUserTurn(
             turn_id=f"chat_{session_id}_t{turn_sequence}",
             sequence_number=turn_sequence,
@@ -454,14 +460,20 @@ class PersistentSalesRuntime:
                     pipeline_outcome=pipeline_outcome,
                 ))
         except Exception:
-            # Slice 51B — commit failed (stale revision, idempotency
+            # Slice 51B/51I — commit failed (stale revision, idempotency
             # conflict, DB error). Restore the processor's in-memory
-            # discussion coverage so speculative state cannot leak into
-            # the next turn's snapshot export.
+            # discussion coverage AND reasoning-call budget so speculative
+            # state cannot leak into the next turn's snapshot export AND
+            # the budget semantics (Model B — committed-turn) are
+            # consistent whether we continue in-process or crash + restart.
             if pre_turn_coverage is not None and hasattr(
                 processor, "_discussion_coverage",
             ):
                 processor._discussion_coverage = pre_turn_coverage
+            if pre_turn_reasoning_calls is not None and hasattr(
+                processor, "_reasoning_calls",
+            ):
+                processor._reasoning_calls = pre_turn_reasoning_calls
             raise
 
         return PersistentTurnResult(
