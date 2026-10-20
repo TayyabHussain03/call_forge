@@ -560,8 +560,35 @@ class PersistentSalesRuntime:
         session_error: bool = False,
         termination_reason: TerminationReason = TerminationReason.NATURAL_COMPLETION,
     ) -> PersistentLifecycleResult:
-        """Generate LeadOutcome from persisted terminal state."""
+        """Generate LeadOutcome from persisted terminal state.
+
+        Slice 51J — thread the live processor's authoritative state into
+        the OutcomeIntelligenceInput so outcome attribution reflects the
+        CURRENT participant's observed interest/objections/qualification,
+        not merely the terminal flags. Without this, Person B's explicit
+        interest cannot drive INTERESTED and Person A's archived objection
+        could leak through other channels. Attribution per active
+        participant is a business-data integrity rule (AGENTS.md §16).
+        """
         session = self.sessions.get(session_id)
+        processor = self._processors.get(session_id)
+        prospect_observed = None
+        prospect_inferred = None
+        business_conversation = None
+        business_diagnostic = None
+        qualification_snapshot = None
+        business_memory = None
+        playbook_guidance = None
+        if processor is not None:
+            prospect = getattr(processor, "prospect_intelligence", None)
+            if prospect is not None:
+                prospect_observed = getattr(prospect, "observed", None)
+                prospect_inferred = getattr(prospect, "inferred", None)
+            business_conversation = getattr(processor, "business_conversation", None)
+            business_diagnostic = getattr(processor, "business_diagnostic", None)
+            qualification_snapshot = getattr(processor, "qualification", None)
+            business_memory = getattr(processor, "business_memory", None)
+            playbook_guidance = getattr(processor, "playbook_guidance", None)
         inp = OutcomeIntelligenceInput(
             lead_id=session.lead_id,
             campaign_id=session.campaign_id,
@@ -572,6 +599,13 @@ class PersistentSalesRuntime:
             session_error=session_error,
             termination_reason=termination_reason,
             conversation_terminal=True,
+            prospect_observed=prospect_observed,
+            prospect_inferred=prospect_inferred,
+            business_conversation=business_conversation,
+            business_diagnostic=business_diagnostic,
+            qualification=qualification_snapshot,
+            business_memory=business_memory,
+            playbook_guidance=playbook_guidance,
         )
         outcome = self._outcome.resolve(inp)
         execution = ExecutionStatus.FAILED if session_error else ExecutionStatus.COMPLETED
