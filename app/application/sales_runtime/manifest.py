@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from app.application.sales_runtime.serializers import (
+    BUDGET_STATE_KEY,
     BUSINESS_CONVERSATION_KEY,
     DISCUSSION_COVERAGE_KEY,
     LANGUAGE_PROFILE_KEY,
@@ -32,7 +33,6 @@ from app.application.sales_runtime.snapshot import SNAPSHOT_VERSION_CURRENT
 STEERING_KEY = "steering"
 UNFINISHED_INTENT_KEY = "unfinished_intent"
 REPETITION_STATE_KEY = "repetition_state"
-BUDGET_STATE_KEY = "budget_state"
 EVIDENCE_SATURATION_KEY = "evidence_saturation"
 
 
@@ -76,6 +76,7 @@ def default_manifest() -> SnapshotCompatibilityManifest:
             (PARTICIPANT_STATE_KEY, 1),
             (DISCUSSION_COVERAGE_KEY, 1),
             (PARTICIPANT_PROSPECT_ARCHIVE_KEY, 1),
+            (BUDGET_STATE_KEY, 1),
         ),
         required_for_active_recovery=frozenset({
             BUSINESS_CONVERSATION_KEY,
@@ -87,10 +88,10 @@ def default_manifest() -> SnapshotCompatibilityManifest:
             PARTICIPANT_STATE_KEY,
             DISCUSSION_COVERAGE_KEY,
             PARTICIPANT_PROSPECT_ARCHIVE_KEY,
+            BUDGET_STATE_KEY,
             STEERING_KEY,
             UNFINISHED_INTENT_KEY,
             REPETITION_STATE_KEY,
-            BUDGET_STATE_KEY,
             EVIDENCE_SATURATION_KEY,
         }),
     )

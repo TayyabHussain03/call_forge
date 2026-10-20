@@ -263,6 +263,9 @@ class ProductionTurnProcessor(TurnProcessor):
         # participant-scoped prospect state across restart so Person B
         # cannot inherit Person A's interest/objection/busy/role.
         initial_participant_prospect_archive=(),
+        # Slice 51H — persisted reasoning-call counter so restart cannot
+        # grant extra Brain reasoning capacity. Counts committed calls.
+        initial_reasoning_calls: int = 0,
         business_memory_scope: BusinessMemoryScope | None = None,
         knowledge_retrieval_policy: KnowledgeRetrievalPolicy | None = None,
         knowledge_need_provider: Callable[[CoordinatedUserTurn, LeanTurnContext], tuple[KnowledgeNeed, ...]] | None = None,
@@ -405,7 +408,11 @@ class ProductionTurnProcessor(TurnProcessor):
         )
         self._recent_turns: tuple[RecentTurn, ...] = ()
         self._turn_count = 0
-        self._reasoning_calls = 0
+        if not isinstance(initial_reasoning_calls, int) or isinstance(
+            initial_reasoning_calls, bool,
+        ) or initial_reasoning_calls < 0:
+            raise ValueError("initial_reasoning_calls must be a non-negative int")
+        self._reasoning_calls = initial_reasoning_calls
 
     @property
     def context(self) -> ConversationContext:
@@ -524,6 +531,12 @@ class ProductionTurnProcessor(TurnProcessor):
         by the retiring participant's reference ID.
         """
         return self._participant_prospect_archive
+
+    @property
+    def reasoning_calls(self) -> int:
+        """Committed reasoning-call counter. Persisted so restart cannot
+        grant extra Brain reasoning capacity."""
+        return self._reasoning_calls
 
     @property
     def latest_participant_decision(self):
@@ -700,6 +713,16 @@ class ProductionTurnProcessor(TurnProcessor):
                 ParticipantProspectArchiveSerializer().serialize(
                     self._participant_prospect_archive,
                 ),
+            ))
+        # Slice 51H — persist reasoning_calls so restart cannot grant
+        # extra reasoning capacity. Emit whenever counter > 0.
+        if self._reasoning_calls > 0:
+            from app.application.sales_runtime.serializers import (
+                BUDGET_STATE_KEY, BudgetStateSerializer,
+            )
+            payloads.append((
+                BUDGET_STATE_KEY,
+                BudgetStateSerializer().serialize(self._reasoning_calls),
             ))
         # Only emit coverage when non-empty — avoids empty-payload churn
         if (

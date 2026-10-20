@@ -19,6 +19,10 @@ from app.application.sales_runtime.serializers.language import (
     LANGUAGE_PROFILE_KEY,
     LanguageProfileSerializer,
 )
+from app.application.sales_runtime.serializers.budget import (
+    BUDGET_STATE_KEY,
+    BudgetStateSerializer,
+)
 from app.application.sales_runtime.serializers.participant import (
     DISCUSSION_COVERAGE_KEY,
     PARTICIPANT_STATE_KEY,
@@ -57,4 +61,6 @@ __all__ = [
     "DiscussionCoverageSerializer",
     "PARTICIPANT_PROSPECT_ARCHIVE_KEY",
     "ParticipantProspectArchiveSerializer",
+    "BUDGET_STATE_KEY",
+    "BudgetStateSerializer",
 ]
