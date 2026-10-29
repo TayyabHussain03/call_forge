@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Outbound Agent — Chat</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #f6f7f9;
+      color: #111;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 10px 16px;
+      border-bottom: 1px solid #e3e5ea;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #connection-status, #session-status {
+      font-size: 12px; padding: 4px 8px; border-radius: 999px;
+      border: 1px solid #d4d7de; background: #f0f1f4;
+    }
+    #connection-status[data-state="connected"] {
+      border-color: #86d78b; background: #e9f8ea; color: #1b6a21;
+    }
+    #connection-status[data-state="reconnecting"] {
+      border-color: #e6b96b; background: #fff5e0; color: #7a4e00;
+    }
+    #connection-status[data-state="failed"],
+    #connection-status[data-state="disconnected"] {
+      border-color: #e3999a; background: #fdeaea; color: #7a1b1d;
+    }
+    main {
+      flex: 1 1 auto;
+      padding: 12px 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .msg { max-width: 70ch; padding: 8px 12px; border-radius: 10px; }
+    .msg.prospect { align-self: flex-end; background: #d6ecff; }
+    .msg.agent { align-self: flex-start; background: #fff; border: 1px solid #e3e5ea; }
+    .msg[data-status="pending"] { opacity: 0.6; }
+    .msg[data-status="failed"] { background: #fdeaea; border: 1px solid #e3999a; }
+    .msg[data-status="failed"] button {
+      margin-left: 8px; font-size: 11px; cursor: pointer;
+    }
+    footer {
+      border-top: 1px solid #e3e5ea;
+      padding: 10px 16px;
+      background: #fff;
+      display: flex;
+      gap: 8px;
+    }
+    #input {
+      flex: 1 1 auto; min-height: 40px; max-height: 160px;
+      padding: 8px 10px; border: 1px solid #d4d7de; border-radius: 8px;
+      font: inherit; resize: vertical;
+    }
+    #send, #finish {
+      padding: 8px 14px; border-radius: 8px; border: 1px solid #c7c9cf;
+      background: #111; color: #fff; cursor: pointer; font-size: 14px;
+    }
+    #send[disabled], #finish[disabled] {
+      background: #99a0ad; cursor: not-allowed;
+    }
+    #finish { background: #6a2b2d; }
+    #error-banner {
+      display: none; margin: 8px 16px; padding: 8px 12px;
+      border-radius: 8px; background: #fdeaea; border: 1px solid #e3999a;
+      color: #7a1b1d; font-size: 13px;
+    }
+    #error-banner.visible { display: block; }
+    #outcome {
+      display: none; margin: 8px 16px; padding: 8px 12px;
+      border-radius: 8px; background: #eef2ff; border: 1px solid #c6ceff;
+      font-size: 13px;
+    }
+    #outcome.visible { display: block; }
+    @media (max-width: 500px) {
+      main { padding: 8px 10px; }
+      footer { padding: 8px 10px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Outbound Agent</h1>
+    <div>
+      <span id="connection-status" data-state="idle">idle</span>
+      <span id="session-status">no session</span>
+    </div>
+  </header>
+  <div id="error-banner" role="alert" aria-live="polite"></div>
+  <main id="messages" aria-live="polite"></main>
+  <div id="outcome" aria-live="polite"></div>
+  <footer>
+    <label for="input" style="position:absolute;left:-9999px;">Message</label>
+    <textarea
+      id="input"
+      placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+      maxlength="2000"
+      disabled
+    ></textarea>
+    <button id="send" disabled aria-label="Send message">Send</button>
+    <button id="finish" disabled aria-label="Finish session">Finish</button>
+  </footer>
+
+<script>
+"use strict";
+// -----------------------------------------------------------------------------
+// Outbound Agent — vanilla JS chat client.
+//
+// Architecture:
+//
+//   SalesChatController
+//     owns per-session state. One instance per session_id. Not a singleton.
+//
+//   ApiClient         HTTP calls (bootstrap, get, finish). Pure transport.
+//   SalesSocket       WebSocket wrapper with explicit lifecycle states.
+//
+// Design invariants (NON-NEGOTIABLE — tested by the backend harness):
+//
+//   1. One logical user action keeps ONE turn_request_id across every retry,
+//      reconnect, HTTP fallback. Never regenerated on resend.
+//   2. One in-flight turn per controller (one-at-a-time at the client).
+//      Second user action is queued or blocked until first resolves.
+//   3. Backend session is authoritative — never fabricate agent messages
+//      or terminal state; always wait for server response.
+//   4. Deduplicate incoming agent_turn messages by turn_request_id.
+//   5. Browser recovery NEVER reconstructs backend semantics from the
+//      visible transcript. Only session_id is persisted (sessionStorage).
+//      Backend provides the authoritative state via GET /sessions/{id}.
+//   6. All user/agent text rendered via `textContent` only — no innerHTML.
+//      XSS safety by construction.
+//   7. No business/service/participant/industry hardcoding. Chat displays
+//      whatever the server returned.
+//   8. No chain-of-thought, policy trace, snapshot, or hidden diagnostic
+//      is fetched or displayed. The public API intentionally excludes them.
+// -----------------------------------------------------------------------------
+
+const CONFIG = (() => {
+  const url = new URL(window.location.href);
+  const params = url.searchParams;
+  return {
+    apiBase: params.get("api") || document.body.dataset.apiBase || window.location.origin,
+    wsBase: params.get("ws") ||
+            document.body.dataset.wsBase ||
+            (window.location.origin.replace(/^http/, "ws")),
+    tenantId: params.get("tenant") || document.body.dataset.tenant || "",
+    campaignId: params.get("campaign") || document.body.dataset.campaign || "",
+    leadId: params.get("lead") || document.body.dataset.lead || "",
+  };
+})();
+
+const STORAGE_KEY = "outboundAgent.session";
+
+function genId(prefix) {
+  // crypto.randomUUID() isn't universally available; fallback to timestamp+rand.
+  const u = (typeof crypto !== "undefined" && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+  return prefix + "-" + u;
+}
+
+// -----------------------------------------------------------------------------
+// HTTP client — never touches singleton state. Supplies tenant header.
+// -----------------------------------------------------------------------------
+class ApiClient {
+  constructor(baseUrl, tenantId) {
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.tenantId = tenantId;
+  }
+  _headers() {
+    return {
+      "Content-Type": "application/json",
+      "X-Tenant-Id": this.tenantId,
+    };
+  }
+  async _request(method, path, body) {
+    const resp = await fetch(this.baseUrl + path, {
+      method,
+      headers: this._headers(),
+      body: body == null ? undefined : JSON.stringify(body),
+    });
+    const text = await resp.text();
+    const data = text ? safeJsonParse(text) : null;
+    if (!resp.ok) {
+      const code = (data && data.detail && data.detail.code) || "NETWORK";
+      const message = (data && data.detail && data.detail.message) || resp.statusText;
+      const err = new Error(message);
+      err.code = code;
+      err.status = resp.status;
+      throw err;
+    }
+    return data;
+  }
+  startSession(body) {
+    return this._request("POST", "/api/v1/sessions", body);
+  }
+  getSession(sessionId) {
+    return this._request("GET", "/api/v1/sessions/" + encodeURIComponent(sessionId));
+  }
+  sendTurn(sessionId, body) {
+    return this._request(
+      "POST",
+      "/api/v1/sessions/" + encodeURIComponent(sessionId) + "/turns",
+      body,
+    );
+  }
+  finish(sessionId, body) {
+    return this._request(
+      "POST",
+      "/api/v1/sessions/" + encodeURIComponent(sessionId) + "/finish",
+      body || {},
+    );
+  }
+}
+
+function safeJsonParse(txt) {
+  try { return JSON.parse(txt); } catch { return null; }
+}
+
+// -----------------------------------------------------------------------------
+// WebSocket wrapper
+// -----------------------------------------------------------------------------
+class SalesSocket {
+  constructor(wsBase, sessionId, tenantId, onMessage, onStateChange) {
+    this.wsBase = wsBase.replace(/\/+$/, "");
+    this.sessionId = sessionId;
+    this.tenantId = tenantId;
+    this.onMessage = onMessage;
+    this.onStateChange = onStateChange;
+    this.state = "idle";
+    this._ws = null;
+    this._reconnectAttempt = 0;
+    this._shouldReconnect = true;
+  }
+  _setState(s) {
+    this.state = s;
+    this.onStateChange(s);
+  }
+  connect() {
+    this._shouldReconnect = true;
+    this._open();
+  }
+  _open() {
+    this._setState(this._reconnectAttempt === 0 ? "connecting" : "reconnecting");
+    const url = this.wsBase + "/ws/sessions/"
+      + encodeURIComponent(this.sessionId)
+      + "?tenant=" + encodeURIComponent(this.tenantId);
+    const ws = new WebSocket(url);
+    this._ws = ws;
+    ws.addEventListener("open", () => {
+      this._reconnectAttempt = 0;
+      this._setState("connected");
+    });
+    ws.addEventListener("message", (ev) => {
+      const parsed = safeJsonParse(ev.data);
+      if (!parsed || typeof parsed.type !== "string") {
+        this.onMessage({ type: "error", code: "VALIDATION_ERROR", message: "malformed server payload" });
+        return;
+      }
+      this.onMessage(parsed);
+    });
+    ws.addEventListener("close", (ev) => {
+      this._ws = null;
+      if (!this._shouldReconnect) { this._setState("disconnected"); return; }
+      if (ev.code === 4404 || ev.code === 4403 || ev.code === 1008) {
+        // Permanent application closures — do not reconnect.
+        this._setState("failed");
+        return;
+      }
+      this._reconnectAttempt += 1;
+      if (this._reconnectAttempt > 6) { this._setState("failed"); return; }
+      const delay = Math.min(1000 * 2 ** (this._reconnectAttempt - 1), 15000);
+      setTimeout(() => { if (this._shouldReconnect) this._open(); }, delay);
+    });
+    ws.addEventListener("error", () => { /* close event will follow */ });
+  }
+  send(obj) {
+    if (!this._ws || this._ws.readyState !== 1) return false;
+    this._ws.send(JSON.stringify(obj));
+    return true;
+  }
+  close() {
+    this._shouldReconnect = false;
+    if (this._ws) this._ws.close();
+    this._setState("disconnected");
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Controller — owns pending-turn state, enforces single in-flight.
+// -----------------------------------------------------------------------------
+class SalesChatController {
+  constructor({ api, wsBase, tenantId, sessionId, onEvent }) {
+    this.api = api;
+    this.wsBase = wsBase;
+    this.tenantId = tenantId;
+    this.sessionId = sessionId;
+    this.onEvent = onEvent || (() => {});
+    this.pending = null;         // { turnRequestId, text, status, msgEl }
+    this.renderedTurnIds = new Set();
+    this.sessionTerminal = false;
+    this.socket = null;
+  }
+  attachSocket() {
+    this.socket = new SalesSocket(
+      this.wsBase, this.sessionId, this.tenantId,
+      (msg) => this._onServerMessage(msg),
+      (state) => this.onEvent({ kind: "connection", state }),
+    );
+    this.socket.connect();
+  }
+  _onServerMessage(msg) {
+    if (msg.type === "agent_turn") {
+      // Deduplicate by turn_request_id — reconnect replay must not render
+      // a second agent bubble for the same logical turn.
+      if (this.renderedTurnIds.has(msg.turn_request_id)) return;
+      this.renderedTurnIds.add(msg.turn_request_id);
+      if (this.pending && this.pending.turnRequestId === msg.turn_request_id) {
+        this.pending.status = "committed";
+        this.onEvent({ kind: "pending_resolved", pending: this.pending });
+        this.pending = null;
+      }
+      if (msg.terminal) this.sessionTerminal = true;
+      this.onEvent({
+        kind: "agent_turn",
+        turnRequestId: msg.turn_request_id,
+        text: msg.text,
+        sessionStatus: msg.session_status,
+        terminal: msg.terminal,
+        revision: msg.revision,
+        replayed: msg.replayed === true,
+      });
+      return;
+    }
+    if (msg.type === "error") {
+      this.onEvent({ kind: "server_error", code: msg.code, message: msg.message });
+      // Stale revision is NOT a safe blind retry — the conversation may
+      // have moved on. Mark the pending message as failed and surface
+      // the conflict so product UX can decide the next action.
+      if (this.pending && (msg.code === "STALE_REVISION" || msg.code === "VALIDATION_ERROR")) {
+        this.pending.status = "failed";
+        this.onEvent({ kind: "pending_failed", pending: this.pending, code: msg.code });
+      }
+      return;
+    }
+    // Unknown envelope — fail safely.
+    this.onEvent({ kind: "unknown_message", msg });
+  }
+  canSend() {
+    return !this.sessionTerminal && this.pending === null;
+  }
+  // Submit a new user utterance. Generates ONE turn_request_id tied to
+  // this pending record. Reused on every retry/reconnect.
+  submit(text) {
+    if (!this.canSend()) return null;
+    const turnRequestId = genId("tr");
+    const pending = { turnRequestId, text, status: "pending" };
+    this.pending = pending;
+    this.onEvent({ kind: "pending_created", pending });
+    this._dispatch(pending);
+    return pending;
+  }
+  // Retry the pending record WITHOUT changing turn_request_id.
+  retry() {
+    if (!this.pending) return;
+    this.pending.status = "pending";
+    this.onEvent({ kind: "pending_retrying", pending: this.pending });
+    this._dispatch(this.pending);
+  }
+  _dispatch(pending) {
+    if (this.socket && this.socket.state === "connected") {
+      const sent = this.socket.send({
+        type: "user_turn",
+        turn_request_id: pending.turnRequestId,
+        text: pending.text,
+      });
+      if (sent) return;
+    }
+    // HTTP fallback — SAME turn_request_id guarantees idempotency.
+    this.api.sendTurn(this.sessionId, {
+      turn_request_id: pending.turnRequestId,
+      text: pending.text,
+    }).then((resp) => {
+      // Treat the HTTP response as if it had arrived via WS so the
+      // dedupe/pending resolution path is unified.
+      this._onServerMessage({
+        type: "agent_turn",
+        turn_request_id: resp.turn_request_id,
+        session_id: resp.session_id,
+        turn_sequence: resp.turn_sequence,
+        text: resp.text,
+        session_status: resp.session_status,
+        terminal: resp.terminal,
+        revision: resp.revision,
+        replayed: resp.replayed === true,
+      });
+    }).catch((err) => {
+      pending.status = "failed";
+      this.onEvent({ kind: "pending_failed", pending, code: err.code || "NETWORK", message: err.message });
+    });
+  }
+  async finish(flags) {
+    const resp = await this.api.finish(this.sessionId, flags || {});
+    this.sessionTerminal = true;
+    this.onEvent({ kind: "finished", outcome: resp });
+    if (this.socket) this.socket.close();
+    return resp;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Per-session storage (ONLY session_id; nothing else)
+// -----------------------------------------------------------------------------
+function storeSessionId(sessionId) {
+  try { sessionStorage.setItem(STORAGE_KEY, sessionId); } catch {}
+}
+function recallSessionId() {
+  try { return sessionStorage.getItem(STORAGE_KEY); } catch { return null; }
+}
+function clearStoredSession() {
+  try { sessionStorage.removeItem(STORAGE_KEY); } catch {}
+}
+
+// -----------------------------------------------------------------------------
+// Minimal view
+// -----------------------------------------------------------------------------
+const dom = {
+  messages: document.getElementById("messages"),
+  input: document.getElementById("input"),
+  send: document.getElementById("send"),
+  finish: document.getElementById("finish"),
+  connStatus: document.getElementById("connection-status"),
+  sessStatus: document.getElementById("session-status"),
+  errorBanner: document.getElementById("error-banner"),
+  outcome: document.getElementById("outcome"),
+};
+
+function showError(text) {
+  dom.errorBanner.textContent = text;
+  dom.errorBanner.classList.add("visible");
+}
+function clearError() { dom.errorBanner.classList.remove("visible"); dom.errorBanner.textContent = ""; }
+
+function renderProspectBubble(pending) {
+  const el = document.createElement("div");
+  el.className = "msg prospect";
+  el.dataset.turnRequestId = pending.turnRequestId;
+  el.dataset.status = pending.status;
+  // XSS: use textContent, never innerHTML.
+  const span = document.createElement("span");
+  span.textContent = pending.text;
+  el.appendChild(span);
+  dom.messages.appendChild(el);
+  pending.msgEl = el;
+  dom.messages.scrollTop = dom.messages.scrollHeight;
+}
+
+function updateProspectBubble(pending) {
+  if (!pending.msgEl) return;
+  pending.msgEl.dataset.status = pending.status;
+  if (pending.status === "failed") {
+    if (!pending.msgEl.querySelector(".retry-btn")) {
+      const btn = document.createElement("button");
+      btn.textContent = "Retry";
+      btn.className = "retry-btn";
+      btn.addEventListener("click", () => {
+        controller.retry();
+      });
+      pending.msgEl.appendChild(btn);
+    }
+  } else {
+    const existing = pending.msgEl.querySelector(".retry-btn");
+    if (existing) existing.remove();
+  }
+}
+
+function renderAgentBubble(text) {
+  const el = document.createElement("div");
+  el.className = "msg agent";
+  const span = document.createElement("span");
+  span.textContent = text;
+  el.appendChild(span);
+  dom.messages.appendChild(el);
+  dom.messages.scrollTop = dom.messages.scrollHeight;
+}
+
+function updateInputState() {
+  const canSend = controller && controller.canSend();
+  dom.input.disabled = !canSend;
+  dom.send.disabled = !canSend;
+  dom.finish.disabled = !controller || controller.sessionTerminal;
+}
+
+// -----------------------------------------------------------------------------
+// Controller event wiring
+// -----------------------------------------------------------------------------
+let controller = null;
+
+function onControllerEvent(ev) {
+  if (ev.kind === "connection") {
+    dom.connStatus.dataset.state = ev.state;
+    dom.connStatus.textContent = ev.state;
+    updateInputState();
+    return;
+  }
+  if (ev.kind === "pending_created") {
+    renderProspectBubble(ev.pending);
+    updateInputState();
+    return;
+  }
+  if (ev.kind === "pending_resolved") {
+    updateProspectBubble(ev.pending);
+    updateInputState();
+    return;
+  }
+  if (ev.kind === "pending_failed") {
+    updateProspectBubble(ev.pending);
+    showError("Message failed (" + (ev.code || "") + "). Click Retry on the message.");
+    updateInputState();
+    return;
+  }
+  if (ev.kind === "pending_retrying") {
+    updateProspectBubble(ev.pending);
+    clearError();
+    updateInputState();
+    return;
+  }
+  if (ev.kind === "agent_turn") {
+    renderAgentBubble(ev.text);
+    dom.sessStatus.textContent = ev.sessionStatus;
+    if (ev.terminal) {
+      updateInputState();
+    }
+    return;
+  }
+  if (ev.kind === "server_error") {
+    showError(ev.message);
+    return;
+  }
+  if (ev.kind === "finished") {
+    const o = ev.outcome;
+    dom.outcome.textContent =
+      "Session finished — outcome: " + o.outcome_status
+      + " · interest: " + o.interest_level
+      + " · DNC: " + o.dnc_status;
+    dom.outcome.classList.add("visible");
+    updateInputState();
+    return;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Session bootstrap or recovery
+// -----------------------------------------------------------------------------
+async function bootstrap() {
+  if (!CONFIG.tenantId) {
+    showError("No tenant configured — pass ?tenant=... in the URL.");
+    return;
+  }
+  const api = new ApiClient(CONFIG.apiBase, CONFIG.tenantId);
+  const existingSessionId = recallSessionId();
+
+  if (existingSessionId) {
+    try {
+      const sess = await api.getSession(existingSessionId);
+      if (sess && sess.status === "active") {
+        startController(api, existingSessionId);
+        return;
+      }
+      // Terminal/completed — show terminal and clear local reference.
+      dom.sessStatus.textContent = sess.status;
+      clearStoredSession();
+    } catch (err) {
+      if (err.code === "SESSION_NOT_FOUND" || err.code === "SESSION_FORBIDDEN") {
+        clearStoredSession();
+      } else {
+        showError("Could not recover previous session: " + err.message);
+      }
+    }
+  }
+
+  if (!CONFIG.campaignId || !CONFIG.leadId) {
+    showError("No campaign/lead configured — pass ?campaign=...&lead=... in the URL.");
+    return;
+  }
+  const sessionId = genId("sess");
+  try {
+    await api.startSession({
+      campaign_id: CONFIG.campaignId,
+      lead_id: CONFIG.leadId,
+      session_id: sessionId,
+      bootstrap_request_id: genId("boot"),
+      trusted_time_iso: new Date().toISOString(),
+    });
+    storeSessionId(sessionId);
+    startController(api, sessionId);
+  } catch (err) {
+    showError("Could not start session: " + err.message);
+  }
+}
+
+function startController(api, sessionId) {
+  controller = new SalesChatController({
+    api, wsBase: CONFIG.wsBase, tenantId: CONFIG.tenantId, sessionId,
+    onEvent: onControllerEvent,
+  });
+  controller.attachSocket();
+  dom.sessStatus.textContent = "session: " + sessionId;
+  updateInputState();
+}
+
+dom.send.addEventListener("click", () => doSend());
+dom.input.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && !ev.shiftKey) {
+    ev.preventDefault();
+    doSend();
+  }
+});
+dom.finish.addEventListener("click", async () => {
+  if (!controller) return;
+  try { await controller.finish({}); } catch (err) {
+    showError("Finish failed: " + err.message);
+  }
+});
+
+function doSend() {
+  if (!controller || !controller.canSend()) return;
+  const text = dom.input.value.trim();
+  if (!text) return;
+  dom.input.value = "";
+  controller.submit(text);
+}
+
+// Expose a small controlled surface for test harnesses that evaluate the
+// module in a browser-like environment. Not used by UI code.
+if (typeof window !== "undefined") {
+  window.__outboundAgent__ = {
+    ApiClient, SalesSocket, SalesChatController,
+    genId, STORAGE_KEY,
+  };
+}
+
+bootstrap();
+</script>
+</body>
+</html>
