@@ -1041,6 +1041,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 explanation_concept_id=participant_fields["concept_id"],
                 prior_explanation_depth=participant_fields["prior_depth"],
                 participant_reference_id=participant_fields["participant_ref"],
+                catalog_request=participant_fields.get("catalog_request", False),
             )
         )
         # Attach delivered_explanation if the strategy indicates an
@@ -1119,6 +1120,12 @@ class ProductionTurnProcessor(TurnProcessor):
         """Auto-derive the four participant-aware ResponsePlanningInput
         fields when both an intent provider and a concept provider are
         wired. Fail-closed on provider errors — degrade to no strategy.
+
+        Slice 53 — CATALOG_REQUEST short-circuits:
+            - intent resolved first so catalog is detectable without a concept
+            - catalog does NOT flow through ReExplanationPolicy
+            - strategy stays None → no delivered_explanation →
+              no per-concept coverage advancement (§14, §15)
         """
         from app.conversation.participant.policy import (
             ReExplanationIntent, ReExplanationPolicy,
@@ -1128,11 +1135,33 @@ class ProductionTurnProcessor(TurnProcessor):
             "concept_id": None,
             "prior_depth": None,
             "participant_ref": None,
+            "catalog_request": False,
         }
         if self._active_participant is None:
             return fields
         fields["participant_ref"] = self._active_participant.reference_id
-        # Resolve concept id via provider
+
+        # Resolve intent FIRST so CATALOG_REQUEST can short-circuit without
+        # requiring a concept provider output.
+        intent = ReExplanationIntent.NONE
+        if self._re_explanation_intent_provider is not None:
+            try:
+                proposed = self._re_explanation_intent_provider(
+                    turn, understanding,
+                )
+                if isinstance(proposed, ReExplanationIntent):
+                    intent = proposed
+            except Exception:
+                intent = ReExplanationIntent.NONE
+
+        if intent == ReExplanationIntent.CATALOG_REQUEST:
+            fields["catalog_request"] = True
+            # Deliberately leave strategy=None, concept_id=None, prior_depth=None.
+            # Catalog is NOT a re-explanation of one concept and must not
+            # advance per-concept coverage.
+            return fields
+
+        # Resolve concept id via provider (re-explanation path)
         concept_id = None
         if self._explanation_concept_provider is not None:
             try:
@@ -1144,17 +1173,6 @@ class ProductionTurnProcessor(TurnProcessor):
         if not concept_id:
             return fields
         fields["concept_id"] = concept_id
-        # Resolve intent via provider (safe fallback = NONE)
-        intent = ReExplanationIntent.NONE
-        if self._re_explanation_intent_provider is not None:
-            try:
-                proposed = self._re_explanation_intent_provider(
-                    turn, understanding,
-                )
-                if isinstance(proposed, ReExplanationIntent):
-                    intent = proposed
-            except Exception:
-                intent = ReExplanationIntent.NONE
         # Compute prior depth and strategy via existing APIs
         fields["prior_depth"] = self._discussion_coverage.depth_for(
             self._active_participant.reference_id, concept_id,

@@ -163,13 +163,23 @@ from enum import Enum  # noqa: E402
 
 
 class ReExplanationIntent(str, Enum):
-    """What the current participant seems to want. Provider proposes."""
+    """What the current participant seems to want. Provider proposes.
+
+    Slice 53 — CATALOG_REQUEST is semantically distinct from
+    DIRECT_SERVICE_QUESTION: the prospect is asking "what can your
+    business offer?" rather than "please explain concept X". It is
+    routed OUTSIDE `ReExplanationPolicy` (which decides concept
+    re-explanation strategy) and never advances per-concept coverage.
+    See `ProductionTurnProcessor._resolve_participant_aware_planner_fields`
+    for the short-circuit path.
+    """
 
     NONE = "none"
     RECAP_REQUEST = "recap_request"
     SIMPLIFY_REQUEST = "simplify_request"
     DEEPEN_REQUEST = "deepen_request"
     DIRECT_SERVICE_QUESTION = "direct_service_question"
+    CATALOG_REQUEST = "catalog_request"
 
 
 class ReExplanationPolicy:
