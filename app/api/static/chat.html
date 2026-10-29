@@ -331,9 +331,14 @@ class SalesChatController {
       if (this.renderedTurnIds.has(msg.turn_request_id)) return;
       this.renderedTurnIds.add(msg.turn_request_id);
       if (this.pending && this.pending.turnRequestId === msg.turn_request_id) {
-        this.pending.status = "committed";
-        this.onEvent({ kind: "pending_resolved", pending: this.pending });
+        const resolved = this.pending;
+        resolved.status = "committed";
+        // Clear pending BEFORE dispatching the event so UI handlers see
+        // `controller.pending === null` and re-enable input correctly.
+        // Caught by Slice 55 real-browser E2E: emitting the event with
+        // pending still set left the textarea stuck disabled.
         this.pending = null;
+        this.onEvent({ kind: "pending_resolved", pending: resolved });
       }
       if (msg.terminal) this.sessionTerminal = true;
       this.onEvent({
@@ -582,14 +587,20 @@ async function bootstrap() {
         startController(api, existingSessionId);
         return;
       }
-      // Terminal/completed — show terminal and clear local reference.
+      // Terminal/completed — show terminal AND stop. §39 — must NOT
+      // silently bootstrap a new session; that would present a brand
+      // new sales conversation as if it were the finished one. The user
+      // must take an explicit action to start a new session. Caught by
+      // Slice 55 real-browser E2E.
       dom.sessStatus.textContent = sess.status;
       clearStoredSession();
+      return;
     } catch (err) {
       if (err.code === "SESSION_NOT_FOUND" || err.code === "SESSION_FORBIDDEN") {
         clearStoredSession();
       } else {
         showError("Could not recover previous session: " + err.message);
+        return;
       }
     }
   }

@@ -610,6 +610,24 @@ class PersistentSalesRuntime:
         outcome = self._outcome.resolve(inp)
         execution = ExecutionStatus.FAILED if session_error else ExecutionStatus.COMPLETED
 
+        # Slice 55 — transition session.status so the public view
+        # (`GET /sessions/{id}.status`) reflects the terminal state.
+        # Without this, a client reloading after finish would observe
+        # `status=active` and reasonably reconnect as if chat continued.
+        # Only transition from ACTIVE; later finish calls remain
+        # idempotent (COMPLETED/TERMINATED/ERROR stay as-is).
+        new_status = (
+            SessionStatus.ERROR if session_error else SessionStatus.COMPLETED
+        )
+        if session.status == SessionStatus.ACTIVE and session.status != new_status:
+            try:
+                session = self.sessions.update(replace(session, status=new_status))
+            except StaleRevisionError:
+                # Another writer committed concurrently — re-read the
+                # authoritative state. finish is terminal; the latest
+                # row is correct.
+                session = self.sessions.get(session_id)
+
         # Durable DNC write for the queue if the session concluded as DNC
         if is_dnc:
             try:
