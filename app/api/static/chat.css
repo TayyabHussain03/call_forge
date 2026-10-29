@@ -1,0 +1,91 @@
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    .sr-only {
+      position: absolute; left: -9999px;
+      width: 1px; height: 1px; overflow: hidden;
+    }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #f6f7f9;
+      color: #111;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 10px 16px;
+      border-bottom: 1px solid #e3e5ea;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    #connection-status, #session-status {
+      font-size: 12px; padding: 4px 8px; border-radius: 999px;
+      border: 1px solid #d4d7de; background: #f0f1f4;
+    }
+    #connection-status[data-state="connected"] {
+      border-color: #86d78b; background: #e9f8ea; color: #1b6a21;
+    }
+    #connection-status[data-state="reconnecting"] {
+      border-color: #e6b96b; background: #fff5e0; color: #7a4e00;
+    }
+    #connection-status[data-state="failed"],
+    #connection-status[data-state="disconnected"] {
+      border-color: #e3999a; background: #fdeaea; color: #7a1b1d;
+    }
+    main {
+      flex: 1 1 auto;
+      padding: 12px 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .msg { max-width: 70ch; padding: 8px 12px; border-radius: 10px; }
+    .msg.prospect { align-self: flex-end; background: #d6ecff; }
+    .msg.agent { align-self: flex-start; background: #fff; border: 1px solid #e3e5ea; }
+    .msg[data-status="pending"] { opacity: 0.6; }
+    .msg[data-status="failed"] { background: #fdeaea; border: 1px solid #e3999a; }
+    .msg[data-status="failed"] button {
+      margin-left: 8px; font-size: 11px; cursor: pointer;
+    }
+    footer {
+      border-top: 1px solid #e3e5ea;
+      padding: 10px 16px;
+      background: #fff;
+      display: flex;
+      gap: 8px;
+    }
+    #input {
+      flex: 1 1 auto; min-height: 40px; max-height: 160px;
+      padding: 8px 10px; border: 1px solid #d4d7de; border-radius: 8px;
+      font: inherit; resize: vertical;
+    }
+    #send, #finish {
+      padding: 8px 14px; border-radius: 8px; border: 1px solid #c7c9cf;
+      background: #111; color: #fff; cursor: pointer; font-size: 14px;
+    }
+    #send[disabled], #finish[disabled] {
+      background: #99a0ad; cursor: not-allowed;
+    }
+    #finish { background: #6a2b2d; }
+    #error-banner {
+      display: none; margin: 8px 16px; padding: 8px 12px;
+      border-radius: 8px; background: #fdeaea; border: 1px solid #e3999a;
+      color: #7a1b1d; font-size: 13px;
+    }
+    #error-banner.visible { display: block; }
+    #outcome {
+      display: none; margin: 8px 16px; padding: 8px 12px;
+      border-radius: 8px; background: #eef2ff; border: 1px solid #c6ceff;
+      font-size: 13px;
+    }
+    #outcome.visible { display: block; }
+    @media (max-width: 500px) {
+      main { padding: 8px 10px; }
+      footer { padding: 8px 10px; }
+    }

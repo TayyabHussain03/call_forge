@@ -81,7 +81,9 @@ from app.persistence.sqlite.connection import SqliteConnection
 from app.precall.contracts import PreCallDiscoveryPolicy, ServiceDiscoveryRule
 
 
-CHAT_HTML_PATH = Path(__file__).resolve().parents[2] / "app" / "api" / "static" / "chat.html"
+_STATIC_DIR = Path(__file__).resolve().parents[2] / "app" / "api" / "static"
+CHAT_HTML_PATH = _STATIC_DIR / "chat.html"
+CHAT_JS_PATH = _STATIC_DIR / "chat.js"
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +260,18 @@ class TestStaticServing:
 
 @pytest.fixture(scope="module")
 def chat_source() -> str:
+    """Combined browser-client source (HTML + extracted JS).
+
+    Slice 57A split the inline <script> block into a separate chat.js
+    file to enable a strict `script-src 'self'` CSP. The structural
+    scanners inspect both artifacts together — they are the browser
+    client as the user's browser executes it.
+    """
     assert CHAT_HTML_PATH.is_file(), f"missing {CHAT_HTML_PATH}"
-    return CHAT_HTML_PATH.read_text(encoding="utf-8")
+    assert CHAT_JS_PATH.is_file(), f"missing {CHAT_JS_PATH}"
+    html = CHAT_HTML_PATH.read_text(encoding="utf-8")
+    js = CHAT_JS_PATH.read_text(encoding="utf-8")
+    return html + "\n/* ---chat.js--- */\n" + js
 
 
 class TestClientDesignInvariants:

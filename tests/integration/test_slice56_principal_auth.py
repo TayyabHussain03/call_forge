@@ -578,10 +578,11 @@ class TestBrowserClientAuthHandling:
         """Slice 56 extended Slice 54's permanent-close code list to
         include 4401. Scanner enforces presence."""
         from pathlib import Path
-        import inspect
+        # Slice 57A moved the WS lifecycle handler out of chat.html
+        # into chat.js. The permanent-close code list lives there.
         src = (
             Path(__file__).resolve().parents[2]
-            / "app" / "api" / "static" / "chat.html"
+            / "app" / "api" / "static" / "chat.js"
         ).read_text(encoding="utf-8")
         # 4401 appears alongside the other permanent close codes
         assert "4401" in src

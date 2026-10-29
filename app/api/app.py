@@ -26,6 +26,7 @@ from app.api.auth import (
     DevelopmentHeaderPrincipalResolver,
     PrincipalResolver,
 )
+from app.api.middleware.security_headers import SecurityHeadersMiddleware
 from app.api.routes.health import router as health_router
 from app.api.routes.sessions import router as sessions_router
 from app.api.websocket.chat import router as ws_router
@@ -70,6 +71,8 @@ def create_app(
     app_env: str | None = None,
     cors_allowed_origins: Iterable[str] = (),
     cors_allow_credentials: bool = False,
+    csp_connect_src_origins: Iterable[str] = (),
+    enable_hsts: bool = False,
 ) -> FastAPI:
     """Create the production FastAPI application.
 
@@ -100,6 +103,16 @@ def create_app(
             allow_methods=["GET", "POST"],
             allow_headers=["Content-Type", "X-Tenant-Id", "X-Subject-Id"],
         )
+
+    # Security headers wrap EVERY HTTP response. Added after CORS so
+    # the browser receives both policies on preflight + resource
+    # responses. §10 — CSP ownership lives at the HTTP middleware
+    # boundary, not in route handlers or runtime.
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        connect_src_origins=tuple(csp_connect_src_origins),
+        enable_hsts=enable_hsts and env == "production",
+    )
 
     app.include_router(health_router)
     app.include_router(sessions_router)
