@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.app import create_app
+from app.api.auth import DevelopmentHeaderPrincipalResolver
 from app.application.production_turn_processor import ProductionTurnProcessor
 from app.application.sales_runtime.composition import (
     ProductionSalesRuntimeFacade,
@@ -249,7 +250,11 @@ def api_env(tmp_path):
     def _lookup(cid):
         return campaigns.get(cid)
 
-    app = create_app(runtime=facade.runtime, campaign_lookup=_lookup)
+    app = create_app(
+        runtime=facade.runtime,
+        campaign_lookup=_lookup,
+        principal_resolver=DevelopmentHeaderPrincipalResolver(),
+    )
     return app, facade
 
 

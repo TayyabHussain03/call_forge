@@ -12,11 +12,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
+from app.api.auth import Principal
 from app.api.deps import (
     get_campaign_lookup,
+    get_principal,
     get_runtime,
     get_session_scoped,
-    get_tenant_id,
 )
 from app.api.errors import (
     ApiErrorCode,
@@ -65,18 +66,18 @@ router = APIRouter(prefix="/api/v1")
 async def start_session(
     body: StartSessionRequest,
     runtime: Annotated[PersistentSalesRuntime, Depends(get_runtime)],
-    tenant_id: Annotated[str, Depends(get_tenant_id)],
+    principal: Annotated[Principal, Depends(get_principal)],
     campaign_lookup=Depends(get_campaign_lookup),
 ) -> StartSessionResponse:
     campaign = campaign_lookup(body.campaign_id)
     if campaign is None:
         err = map_bootstrap_rejected(f"campaign '{body.campaign_id}' not configured")
         raise HTTPException(status_code=err.http_status, detail=err.to_payload())
-    if campaign.tenant_id != tenant_id:
+    if campaign.tenant_id != principal.tenant_id:
         err = map_bootstrap_rejected("campaign does not belong to current tenant")
         raise HTTPException(status_code=err.http_status, detail=err.to_payload())
     bootstrap_input = SessionBootstrapInput(
-        tenant_id=tenant_id,
+        tenant_id=principal.tenant_id,
         campaign_id=body.campaign_id,
         lead_id=body.lead_id,
         session_id=body.session_id,

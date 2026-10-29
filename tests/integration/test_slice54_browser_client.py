@@ -31,6 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.app import create_app
+from app.api.auth import DevelopmentHeaderPrincipalResolver
 from app.application.production_turn_processor import ProductionTurnProcessor
 from app.application.sales_runtime.composition import (
     ProductionSalesRuntimeFacade,
@@ -232,7 +233,11 @@ def api_env(tmp_path):
     )
     facade.runtime._processor_factory = _TurnFactory(facade, evidence=evidence)
     campaigns = {"c1": _campaign()}
-    app = create_app(runtime=facade.runtime, campaign_lookup=campaigns.get)
+    app = create_app(
+        runtime=facade.runtime,
+        campaign_lookup=campaigns.get,
+        principal_resolver=DevelopmentHeaderPrincipalResolver(),
+    )
     return app, facade
 
 

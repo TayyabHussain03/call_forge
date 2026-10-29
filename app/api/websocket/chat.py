@@ -24,6 +24,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
+from app.api.auth import AuthenticationError
 from app.api.errors import ApiErrorCode
 from app.api.mappers import map_turn_to_ws_message
 from app.api.schemas import WsErrorMessage, WsUserTurnMessage
@@ -41,6 +42,7 @@ router = APIRouter()
 
 # WebSocket close codes (RFC 6455 + application range 4000-4999)
 _WS_POLICY_VIOLATION = 1008
+_WS_UNAUTHENTICATED = 4401
 _WS_FORBIDDEN = 4403
 _WS_SESSION_NOT_FOUND = 4404
 
@@ -52,24 +54,29 @@ async def _send_error(ws: WebSocket, code: ApiErrorCode, message: str) -> None:
 
 @router.websocket("/ws/sessions/{session_id}")
 async def chat_ws(websocket: WebSocket, session_id: str) -> None:
-    # Tenant from the first subprotocol token or an "X-Tenant-Id" header.
-    tenant_id = websocket.headers.get("x-tenant-id") or websocket.query_params.get("tenant")
-    if not tenant_id:
-        await websocket.close(code=_WS_POLICY_VIOLATION)
-        return
-
     runtime = getattr(websocket.app.state, "runtime", None)
-    if runtime is None:
+    resolver = getattr(websocket.app.state, "principal_resolver", None)
+    if runtime is None or resolver is None:
+        # Factory ensures both are set. If missing, treat as config
+        # failure — close with policy-violation, never silently open.
         await websocket.close(code=_WS_POLICY_VIOLATION)
         return
 
-    # Resolve + authorize session BEFORE accepting (close with 4xxx)
+    # Principal resolution runs BEFORE accept (§14) — handshake fails
+    # on auth failure; the browser's permanent-close handling then
+    # stops reconnecting. HTTP and WS share the same trust boundary.
+    try:
+        principal = resolver.resolve_ws(websocket)
+    except AuthenticationError:
+        await websocket.close(code=_WS_UNAUTHENTICATED)
+        return
+
     try:
         session = runtime.sessions.get(session_id)
     except (SessionNotFoundError, NotFoundError):
         await websocket.close(code=_WS_SESSION_NOT_FOUND)
         return
-    if session.tenant_id != tenant_id:
+    if session.tenant_id != principal.tenant_id:
         await websocket.close(code=_WS_FORBIDDEN)
         return
 

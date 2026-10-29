@@ -277,8 +277,11 @@ class SalesSocket {
     ws.addEventListener("close", (ev) => {
       this._ws = null;
       if (!this._shouldReconnect) { this._setState("disconnected"); return; }
-      if (ev.code === 4404 || ev.code === 4403 || ev.code === 1008) {
+      if (ev.code === 4401 || ev.code === 4403 || ev.code === 4404 || ev.code === 1008) {
         // Permanent application closures — do not reconnect.
+        // 4401: unauthenticated (auth is NOT a network retry).
+        // 4403: forbidden (wrong tenant for this session).
+        // 4404: session not found.
         this._setState("failed");
         return;
       }
