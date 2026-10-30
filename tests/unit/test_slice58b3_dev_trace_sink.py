@@ -120,7 +120,9 @@ class TestBuildDevTrace:
             escalation_decision=overrides.get("escalation_decision", None),
         )
         output = SimpleNamespace(
-            authoritative_result=overrides.get("authoritative_result", None),
+            # Slice 58B.3b — correct contract: CoordinatedTurnOutput
+            # exposes `pipeline_outcome`, not `authoritative_result`.
+            pipeline_outcome=overrides.get("authoritative_result", None),
             conversation_terminal=overrides.get("terminal", False),
             rendered_response=SimpleNamespace(
                 text=overrides.get("rendered_text", "Hi there."),
@@ -194,11 +196,10 @@ class TestProcessorAcceptsSinkWithoutBreaking:
         import inspect
         from app.application import production_turn_processor as mod
         src = inspect.getsource(mod)
-        # The sink call site is wrapped in try/except
-        assert "self._dev_trace_sink(" in src
-        # And the except clause is bare-ish (catches Exception)
-        # (search for the pattern around the sink call)
-        assert "except Exception:" in src
+        # The sink call site is wrapped via _emit_dev_trace_safely
+        assert "_emit_dev_trace_safely" in src
+        assert "_emit_dev_trace_error_safely" in src
+        assert "except Exception" in src
 
 
 class TestNoHttpOrWsExposure:
@@ -219,6 +220,151 @@ class TestNoHttpOrWsExposure:
             src = inspect.getsource(mod)
             assert "dev_trace" not in src
             assert "observability" not in src
+
+
+class TestSafeEmitHelpers:
+    """Slice 58B.3b — explicit coverage for the two helper methods
+    that replaced the ad-hoc try/except around the sink call."""
+
+    def _make_processor_shell(self, sink):
+        """Minimal shell exposing just the helpers under test."""
+        from app.application.production_turn_processor import ProductionTurnProcessor
+        # Build a ProductionTurnProcessor-like shell: we don't need the
+        # full orchestrator pipeline for helper-level tests. We bind
+        # just the two helpers to a bare object with `_dev_trace_sink`
+        # and `_reasoning_calls`.
+        class _Shell:
+            pass
+        shell = _Shell()
+        shell._dev_trace_sink = sink
+        shell._reasoning_calls = 0
+        shell._emit_dev_trace_safely = (
+            ProductionTurnProcessor._emit_dev_trace_safely.__get__(shell)
+        )
+        shell._emit_dev_trace_error_safely = (
+            ProductionTurnProcessor._emit_dev_trace_error_safely.__get__(shell)
+        )
+        return shell
+
+    def _dummy_inputs(self):
+        from types import SimpleNamespace
+        turn = SimpleNamespace(turn_id="t", sequence_number=1, utterance="hi")
+        slice_two = SimpleNamespace(
+            outcome=None, conversation_status=None,
+            trace=SimpleNamespace(
+                stage_outcome=None, provider_name=None,
+                proposal_status=None, scope_category=None,
+                authority_tier=None, action_confidence=None,
+                notes=None, priority_action=None,
+            ),
+        )
+        plan = SimpleNamespace(
+            communicative_goal=None, response_length=None,
+            question_strategy=None, clarification_required=False,
+            addressee_status=None, catalog_request=False,
+            re_explanation_strategy=None, escalation_decision=None,
+        )
+        output = SimpleNamespace(
+            pipeline_outcome=None, conversation_terminal=False,
+            rendered_response=SimpleNamespace(text="Hi!"),
+        )
+        return turn, slice_two, plan, output
+
+    def test_sink_none_short_circuits_no_call(self):
+        shell = self._make_processor_shell(sink=None)
+        turn, s2, plan, output = self._dummy_inputs()
+        # No sink → no emission; also no exception
+        shell._emit_dev_trace_safely(
+            turn=turn, slice_two=s2, slice_three=None,
+            plan=plan, output=output,
+        )
+
+    def test_normal_emit_delivers_one_record(self):
+        received = []
+        shell = self._make_processor_shell(sink=received.append)
+        turn, s2, plan, output = self._dummy_inputs()
+        shell._emit_dev_trace_safely(
+            turn=turn, slice_two=s2, slice_three=None,
+            plan=plan, output=output,
+        )
+        assert len(received) == 1
+        assert received[0]["turn_id"] == "t"
+        # Correct contract field
+        assert received[0]["authoritative_result"] is None
+
+    def test_builder_failure_emits_dev_trace_error_not_silence(self):
+        """§6, §15 — silent failure under DEV_LIVE_TRACE is unacceptable."""
+        received = []
+        shell = self._make_processor_shell(sink=received.append)
+        turn, s2, plan, output = self._dummy_inputs()
+        # Force builder to crash by passing an output missing
+        # pipeline_outcome entirely (AttributeError inside builder)
+        from types import SimpleNamespace
+        bad_output = SimpleNamespace(
+            # no pipeline_outcome, no conversation_terminal, no rendered_response
+        )
+        shell._emit_dev_trace_safely(
+            turn=turn, slice_two=s2, slice_three=None,
+            plan=plan, output=bad_output,
+        )
+        assert len(received) == 1
+        assert received[0].get("__dev_trace_error__") is True
+        assert received[0]["phase"] == "build"
+        assert received[0]["error_type"] == "AttributeError"
+        # Message bounded
+        assert len(received[0]["message"]) <= 200
+
+    def test_sink_failure_emits_dev_trace_error(self):
+        received = []
+        def _flaky(record):
+            received.append(record)
+            if not record.get("__dev_trace_error__"):
+                raise RuntimeError("downstream sink boom")
+        shell = self._make_processor_shell(sink=_flaky)
+        turn, s2, plan, output = self._dummy_inputs()
+        shell._emit_dev_trace_safely(
+            turn=turn, slice_two=s2, slice_three=None,
+            plan=plan, output=output,
+        )
+        # First the normal record, then the error record
+        assert len(received) == 2
+        assert received[0].get("__dev_trace_error__", False) is False
+        assert received[1].get("__dev_trace_error__") is True
+        assert received[1]["phase"] == "sink"
+        assert received[1]["error_type"] == "RuntimeError"
+
+    def test_error_reporter_failure_is_swallowed_no_recursion(self):
+        """§8 — if the error reporter itself fails, swallow. No recursion."""
+        calls = []
+        def _always_fails(record):
+            calls.append(record)
+            raise RuntimeError("sink always fails")
+        shell = self._make_processor_shell(sink=_always_fails)
+        turn, s2, plan, output = self._dummy_inputs()
+        # Does not raise even though sink always fails
+        shell._emit_dev_trace_safely(
+            turn=turn, slice_two=s2, slice_three=None,
+            plan=plan, output=output,
+        )
+        # Exactly two attempts: normal record + error record. No recursion.
+        assert len(calls) == 2
+
+    def test_error_record_contains_no_credentials(self):
+        received = []
+        shell = self._make_processor_shell(sink=received.append)
+        turn, s2, plan, output = self._dummy_inputs()
+        # Build the error record directly via helper and inspect
+        shell._emit_dev_trace_error_safely(
+            received.append,
+            RuntimeError("some bounded message"),
+            phase="test",
+        )
+        err_rec = received[-1]
+        serialized = json.dumps(err_rec).lower()
+        for forbidden in (
+            "api_key", "secret", "chain_of_thought", "traceback",
+        ):
+            assert forbidden not in serialized
 
 
 class TestMainBootstrapWiresSinkConditionally:

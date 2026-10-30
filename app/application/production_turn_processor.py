@@ -1118,21 +1118,59 @@ class ProductionTurnProcessor(TurnProcessor):
             authoritative_result,
             terminal,
         )
-        if self._dev_trace_sink is not None:
-            try:
-                self._dev_trace_sink(_build_dev_trace(
-                    turn=turn,
-                    slice_two=slice_two,
-                    slice_three=slice_three,
-                    plan=plan,
-                    output=output,
-                    reasoning_calls=self._reasoning_calls,
-                ))
-            except Exception:
-                # Dev trace must NEVER corrupt live-turn behavior.
-                # A broken sink is a diagnostic failure, not a runtime one.
-                pass
+        self._emit_dev_trace_safely(
+            turn=turn, slice_two=slice_two, slice_three=slice_three,
+            plan=plan, output=output,
+        )
         return output
+
+    def _emit_dev_trace_safely(
+        self, *, turn, slice_two, slice_three, plan, output,
+    ) -> None:
+        """Opt-in trace emission that NEVER corrupts the live turn.
+
+        Slice 58B.3b — the sink is wrapped so a builder/sink exception
+        does not break the turn. When the sink IS configured (dev mode
+        explicitly on), a failure also emits a bounded
+        `[dev-trace-error]` record so the operator sees that tracing
+        broke rather than silently getting no output.
+        """
+        sink = self._dev_trace_sink
+        if sink is None:
+            return
+        try:
+            record = _build_dev_trace(
+                turn=turn,
+                slice_two=slice_two,
+                slice_three=slice_three,
+                plan=plan,
+                output=output,
+                reasoning_calls=self._reasoning_calls,
+            )
+        except Exception as exc:
+            self._emit_dev_trace_error_safely(sink, exc, phase="build")
+            return
+        try:
+            sink(record)
+        except Exception as exc:
+            self._emit_dev_trace_error_safely(sink, exc, phase="sink")
+
+    def _emit_dev_trace_error_safely(self, sink, exc, *, phase: str) -> None:
+        """Bounded error record so silent trace failure is not possible.
+
+        Includes only the exception type name + a bounded, truncated
+        message — no traceback, no credentials, no raw provider output.
+        If the error reporter itself fails, swallow — never recurse.
+        """
+        try:
+            sink({
+                "__dev_trace_error__": True,
+                "phase": phase,
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:200],
+            })
+        except Exception:
+            pass
 
     def _unknown_participant_state_default(self):
         from app.conversation.participant.contracts import (
@@ -1740,7 +1778,11 @@ def _build_dev_trace(
             ),
         },
         "plan": plan_fields,
-        "authoritative_result": _enum(output.authoritative_result),
+        # Slice 58B.3b — CoordinatedTurnOutput exposes
+        # `pipeline_outcome: AuthoritativeResultKind | None`, not
+        # `authoritative_result`. Previous builder tripped
+        # AttributeError here and was swallowed.
+        "authoritative_result": _enum(output.pipeline_outcome),
         "conversation_terminal": bool(output.conversation_terminal),
         "rendered_text": output.rendered_response.text[:300],
     }
