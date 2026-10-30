@@ -63,7 +63,17 @@ class GeminiReasoningProvider(ReasoningProvider):
         return "gemini"
 
     def reason(self, brain_input: BrainInput) -> BrainProposal:
-        """Make exactly one SDK request and strictly normalize its JSON text."""
+        """Make exactly one SDK request and strictly normalize its JSON text.
+
+        Slice 58A: AFC (automatic function calling) is explicitly disabled.
+        This adapter is a stateless structured-inference provider — it does
+        not expose tools/callables to Gemini. Leaving AFC implicitly enabled
+        (the SDK default on `Models.generate_content`) emits a runtime
+        recommendation to migrate to `Chat.send_message`, which would
+        require stateful chat semantics this provider does not need and
+        does not want. Explicit disable documents the provider contract
+        in code and silences the warning naturally.
+        """
         try:
             response = self._client.models.generate_content(
                 model=self._model,
@@ -71,6 +81,7 @@ class GeminiReasoningProvider(ReasoningProvider):
                 config={
                     "response_mime_type": "application/json",
                     "response_json_schema": brain_proposal_json_schema(),
+                    "automatic_function_calling": {"disable": True},
                 },
             )
         except Exception as exc:
