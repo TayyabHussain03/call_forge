@@ -201,6 +201,12 @@ class TurnDecisionTrace:
     proposed_action: AgentAction | None = None
     detected_intent: object | None = None
     topic_category: object | None = None
+    # Slice 58B.6 — provider failure diagnostics. Populated only on
+    # PROVIDER_FAILED paths. Values are sanitized at the provider
+    # boundary (ReasoningError carries them); never credentials.
+    provider_failure_kind: object | None = None
+    provider_exception_type: str | None = None
+    provider_http_status: int | None = None
 
 
 @dataclass(frozen=True)
@@ -482,7 +488,7 @@ class BrainOrchestrator:
 
         try:
             proposal = self._reasoning.reason(brain_input)
-        except ReasoningError:
+        except ReasoningError as exc:
             return self._brain_result(
                 TurnStageOutcome.FALLBACK,
                 context,
@@ -490,6 +496,12 @@ class BrainOrchestrator:
                 provider_name=self._reasoning.name,
                 proposal_status=BrainProposalStatus.PROVIDER_FAILED,
                 notes="reasoning provider failed",
+                # Slice 58B.6 — surface sanitized provider failure
+                # metadata so the dev trace shows the real cause (auth
+                # / rate / timeout / server) instead of inference.
+                provider_failure_kind=exc.kind,
+                provider_exception_type=getattr(exc, "exception_type", None),
+                provider_http_status=getattr(exc, "http_status", None),
             )
 
         if not _well_formed_proposal(proposal):
@@ -694,6 +706,10 @@ class BrainOrchestrator:
         proposed_action: AgentAction | None = None,
         detected_intent: object | None = None,
         topic_category: object | None = None,
+        # Slice 58B.6 — provider failure diagnostics on the trace.
+        provider_failure_kind: object | None = None,
+        provider_exception_type: str | None = None,
+        provider_http_status: int | None = None,
     ) -> TurnResult:
         trace = TurnDecisionTrace(
             stage_outcome=outcome,
@@ -708,6 +724,9 @@ class BrainOrchestrator:
             proposed_action=proposed_action,
             detected_intent=detected_intent,
             topic_category=topic_category,
+            provider_failure_kind=provider_failure_kind,
+            provider_exception_type=provider_exception_type,
+            provider_http_status=provider_http_status,
         )
         return TurnResult(
             outcome=outcome,

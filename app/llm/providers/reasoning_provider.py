@@ -52,16 +52,26 @@ class ReasoningError(Exception):
     Provider failure/unavailability/internal-error/malformed-output (future real
     providers) → ye exception. Domain fallback/policy NAHI — upper layer decide
     karti hai. Jaan-boojh kar ek clean boundary; 15 speculative subclasses nahi.
+
+    Slice 58B.6 — bounded diagnostic metadata (`exception_type`,
+    `http_status`) is attached when the underlying provider exposes it.
+    Both are opt-in and surface only through dev-only observability.
+    Never carries credentials, prompts, or chain-of-thought.
     """
 
     def __init__(
         self,
         message: str,
         kind: ProviderFailureKind = ProviderFailureKind.TRANSPORT_FAILURE,
+        *,
+        exception_type: str | None = None,
+        http_status: int | None = None,
     ) -> None:
         """Create a sanitized application-level provider failure."""
         super().__init__(message)
         self.kind = kind
+        self.exception_type = exception_type
+        self.http_status = http_status
 
 
 @dataclass(frozen=True)

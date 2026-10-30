@@ -85,13 +85,26 @@ class GeminiReasoningProvider(ReasoningProvider):
                 },
             )
         except Exception as exc:
-            raise ReasoningError("Gemini request failed", _classify_failure(exc)) from exc
+            # Slice 58B.6 — carry provider exception type + HTTP status
+            # on the ReasoningError so the orchestrator trace can show
+            # the real failure cause (auth / rate / timeout / server /
+            # transport) instead of defaulting every live error to
+            # TRANSPORT_FAILURE. Values are sanitized; no secrets.
+            kind = _classify_failure(exc)
+            raise ReasoningError(
+                "Gemini request failed",
+                kind,
+                exception_type=type(exc).__name__,
+                http_status=_extract_http_status(exc),
+            ) from exc
 
         text = getattr(response, "text", None)
         if not isinstance(text, (str, bytes)):
             raise ReasoningError(
                 "Gemini returned no structured text",
                 ProviderFailureKind.INVALID_RESPONSE,
+                exception_type=None,
+                http_status=None,
             )
         try:
             return parse_brain_proposal(text)
@@ -149,11 +162,43 @@ def _json_default(value: Any) -> Any:
 
 
 def _classify_failure(exc: Exception) -> ProviderFailureKind:
+    """Map a provider SDK exception to our typed ProviderFailureKind.
+
+    Slice 58B.6 — google-genai 2.x exposes the HTTP status on `.status`,
+    NOT `.status_code`. The previous classifier read `.status_code` and
+    silently fell through every live google-genai error to
+    TRANSPORT_FAILURE (verified by live trace). This read now checks
+    both so a future SDK/vendor swap keeps classification working.
+    """
     if isinstance(exc, TimeoutError):
         return ProviderFailureKind.TIMEOUT
-    status = getattr(exc, "status_code", None)
+    status = _extract_http_status(exc)
     if status in (401, 403):
         return ProviderFailureKind.AUTH_FAILURE
     if status == 429:
         return ProviderFailureKind.RATE_LIMITED
+    # Many SDK's expose the typed hierarchy; google-genai gives us
+    # `ClientError` (4xx not auth/rate) + `ServerError` (5xx). Classify
+    # 5xx as TRANSPORT_FAILURE (upstream outage); unknown ClientError
+    # (e.g. 400 bad request) also lands here — a schema/config problem
+    # the operator needs to see as a bounded failure kind.
     return ProviderFailureKind.TRANSPORT_FAILURE
+
+
+def _extract_http_status(exc: object) -> int | None:
+    """Return the HTTP status from the SDK exception if it exposes one.
+
+    google-genai 2.x: `.status` (int). Other SDKs: `.status_code`.
+    """
+    for attr in ("status", "status_code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    # Some SDKs nest the status on a response object
+    response = getattr(exc, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status"):
+            value = getattr(response, attr, None)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+    return None

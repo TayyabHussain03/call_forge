@@ -1801,6 +1801,11 @@ def _build_dev_trace(
             "proposed_action": _enum(getattr(t, "proposed_action", None)) if t is not None else None,
             "detected_intent": _enum(getattr(t, "detected_intent", None)) if t is not None else None,
             "topic_category": _enum(getattr(t, "topic_category", None)) if t is not None else None,
+            # Slice 58B.6 — provider failure sub-fields. All None on
+            # success / non-provider paths.
+            "provider_failure_kind": _enum(getattr(t, "provider_failure_kind", None)) if t is not None else None,
+            "provider_exception_type": getattr(t, "provider_exception_type", None) if t is not None else None,
+            "provider_http_status": getattr(t, "provider_http_status", None) if t is not None else None,
         },
         "slice_three": {
             "outcome": _enum(s3.outcome) if s3 is not None else None,
