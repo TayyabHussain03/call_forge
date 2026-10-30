@@ -52,6 +52,7 @@ from app.leads.contracts import (
 from app.llm.provider_factory import create_reasoning_provider
 from app.llm.providers.reasoning_provider import ReasoningProvider
 from app.llm.realization_factory import create_realization_renderer
+from app.observability.dev_trace import resolve_dev_trace_sink
 
 from app.persistence.sqlite.connection import SqliteConnection
 
@@ -154,6 +155,11 @@ class DevTurnFactory:
                 if self._facade is not None
                 else None
             ),
+
+            # Slice 58B.3 — dev-only trace sink, opt-in via
+            # DEV_LIVE_TRACE=1. Resolves to None in normal runs so
+            # offline tests + default dev experience stay quiet.
+            dev_trace_sink=resolve_dev_trace_sink(),
 
             **kwargs,
         )

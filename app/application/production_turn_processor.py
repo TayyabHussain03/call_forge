@@ -273,10 +273,19 @@ class ProductionTurnProcessor(TurnProcessor):
         evidence_validation_policy: EvidenceValidationPolicy | None = None,
         commercial_disclosure_policy: CommercialDisclosurePolicy = CommercialDisclosurePolicy(),
         active_knowledge_base_id: str | None = None,
+        # Slice 58B.3 — dev-only typed trace sink. When supplied, the
+        # processor emits a bounded structured record per turn (brain
+        # proposal fields, scope/authority classification, plan goal,
+        # realization-called flag, final text). Opt-in; never exposed
+        # over HTTP/WS. The sink is responsible for its own output
+        # discipline — must not log secrets, raw prompts, or
+        # chain-of-thought.
+        dev_trace_sink: Callable[[dict], None] | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._planner = response_planner
         self._renderer = response_renderer
+        self._dev_trace_sink = dev_trace_sink
         self._context = initial_context
         self._budget_policy = budget_policy
         self._scope_policy = scope_policy
@@ -1101,7 +1110,7 @@ class ProductionTurnProcessor(TurnProcessor):
         # inside the atomic transaction) captures the updated coverage.
         # Monotonicity is preserved by DiscussionCoverageState.depth_for().
         self._auto_advance_discussion_coverage(turn, plan)
-        return CoordinatedTurnOutput(
+        output = CoordinatedTurnOutput(
             turn.turn_id,
             plan,
             rendered,
@@ -1109,6 +1118,21 @@ class ProductionTurnProcessor(TurnProcessor):
             authoritative_result,
             terminal,
         )
+        if self._dev_trace_sink is not None:
+            try:
+                self._dev_trace_sink(_build_dev_trace(
+                    turn=turn,
+                    slice_two=slice_two,
+                    slice_three=slice_three,
+                    plan=plan,
+                    output=output,
+                    reasoning_calls=self._reasoning_calls,
+                ))
+            except Exception:
+                # Dev trace must NEVER corrupt live-turn behavior.
+                # A broken sink is a diagnostic failure, not a runtime one.
+                pass
+        return output
 
     def _unknown_participant_state_default(self):
         from app.conversation.participant.contracts import (
@@ -1641,3 +1665,82 @@ def _strategy_shaped_need(base: ExplanationNeed, strategy):
     if strategy == ReExplanationStrategy.FULL_RE_EXPLAIN_FOR_NEW_PARTICIPANT:
         return ExplanationNeed.STANDARD
     return base
+
+
+def _build_dev_trace(
+    *,
+    turn,
+    slice_two,
+    slice_three,
+    plan,
+    output,
+    reasoning_calls: int,
+) -> dict:
+    """Build a bounded structured dev-trace record for one turn.
+
+    Captures the fields a diagnostician needs to identify the first
+    divergent layer per Slice 58B.2 §4. Deliberately excludes raw
+    prompts, chain-of-thought, API credentials, Gemini token counts,
+    and any secret. Enum values are serialized as their `.value` strings.
+    """
+    def _enum(v):
+        return v.value if hasattr(v, "value") else (str(v) if v is not None else None)
+
+    s2 = slice_two
+    t = s2.trace if s2 is not None else None
+    s3 = slice_three
+    plan_fields = {
+        "communicative_goal": _enum(plan.communicative_goal),
+        "response_length": _enum(plan.response_length),
+        "question_strategy": _enum(plan.question_strategy),
+        "clarification_required": bool(plan.clarification_required),
+        "addressee_status": _enum(plan.addressee_status),
+        "catalog_request": bool(getattr(plan, "catalog_request", False)),
+        "re_explanation_strategy": _enum(getattr(plan, "re_explanation_strategy", None)),
+        "has_escalation_decision": plan.escalation_decision is not None,
+    }
+    return {
+        "turn_id": turn.turn_id,
+        "turn_sequence": turn.sequence_number,
+        "utterance": turn.utterance[:200],
+        "reasoning_calls_total": reasoning_calls,
+        "slice_two": {
+            "outcome": _enum(s2.outcome) if s2 is not None else None,
+            "conversation_status": _enum(
+                s2.conversation_status if s2 is not None else None,
+            ),
+            "stage_outcome": _enum(t.stage_outcome) if t is not None else None,
+            "provider_name": t.provider_name if t is not None else None,
+            "proposal_status": _enum(t.proposal_status) if t is not None else None,
+            "scope_category": _enum(t.scope_category) if t is not None else None,
+            "authority_tier": _enum(t.authority_tier) if t is not None else None,
+            "action_confidence": t.action_confidence if t is not None else None,
+            "notes": t.notes if t is not None else None,
+            "priority_action": _enum(t.priority_action) if t is not None else None,
+        },
+        "slice_three": {
+            "outcome": _enum(s3.outcome) if s3 is not None else None,
+            "conversation_status": _enum(
+                s3.conversation_status if s3 is not None else None,
+            ),
+            "approved_action": _enum(
+                s3.execution.approved_action
+                if s3 is not None and s3.execution is not None
+                else None,
+            ),
+            "is_terminal": (
+                bool(s3.execution.is_terminal)
+                if s3 is not None and s3.execution is not None
+                else None
+            ),
+            "fallback_used": (
+                bool(s3.execution.fallback_used)
+                if s3 is not None and s3.execution is not None
+                else None
+            ),
+        },
+        "plan": plan_fields,
+        "authoritative_result": _enum(output.authoritative_result),
+        "conversation_terminal": bool(output.conversation_terminal),
+        "rendered_text": output.rendered_response.text[:300],
+    }
