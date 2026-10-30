@@ -28,7 +28,6 @@ from app.conversation.guardrails.action_validator import ActionValidator
 from app.conversation.guardrails.clarification import ClarificationEngine
 from app.conversation.guardrails.fallbacks import FallbackEngine
 from app.conversation.guardrails.priority import TrustedPriorityOutcome
-from app.conversation.participant.intent_provider import ScriptedIntentTransport
 from app.conversation.response_planning.planner import ResponsePlanner
 from app.conversation.response_rendering.renderer import DeterministicResponseRenderer
 from app.conversation.state_machine.machine import ConversationStateMachine
@@ -294,25 +293,17 @@ connection = SqliteConnection(
 # ---------------------------------------------------------------------------
 # SEMANTIC INTENT TRANSPORT
 #
-# TEMPORARY:
-# Brain reasoning is now real Gemini.
+# Slice 58B.2 — ScriptedIntentTransport removed from dev bootstrap.
+# A turn-index semantic classifier produced CATALOG_REQUEST and
+# DIRECT_SERVICE_QUESTION on arbitrary live inputs, contaminating
+# manual testing. Passing `None` is the safe no-op path: the processor's
+# `_re_explanation_intent_provider` becomes None, intent degrades to
+# ReExplanationIntent.NONE, and no concept/catalog short-circuit fires.
 #
-# ReExplanation / Catalog intent classification remains scripted until
-# GeminiIntentClassifierTransport is introduced in the next bounded step.
+# Live GeminiIntentClassifierTransport is Slice 58C.
 # ---------------------------------------------------------------------------
 
-intent_transport = ScriptedIntentTransport(
-    (
-        '{"intent":"none"}',
-        '{"intent":"catalog_request"}',
-        '{"intent":"direct_service_question"}',
-        '{"intent":"none"}',
-        '{"intent":"none"}',
-        '{"intent":"none"}',
-        '{"intent":"none"}',
-        '{"intent":"none"}',
-    )
-)
+intent_transport = None
 
 
 # ---------------------------------------------------------------------------
