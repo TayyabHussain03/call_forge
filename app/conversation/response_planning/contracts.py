@@ -270,6 +270,13 @@ class ResponsePlan:
     # question-only turns). Replaces the Slice 51A ResponseLength heuristic.
     # Downstream auto-coverage records coverage only when this is non-None.
     delivered_explanation: object | None = None
+    # Slice 58B.4 — forward the deterministic ActionValidator-approved
+    # action to the realization layer so the renderer can offer typed
+    # action-specific prose fallbacks (e.g. a natural GREET greeting)
+    # when the live realization provider returns an invalid candidate
+    # or fails. Realizer still owns final wording; this field only
+    # tells the deterministic FALLBACK which action it is realizing.
+    approved_action: object | None = None
 
     def __post_init__(self) -> None:
         _validate_language_profile(self.language_profile)

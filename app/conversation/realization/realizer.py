@@ -29,7 +29,12 @@ from app.conversation.response_rendering.renderer import (
 
 
 class GuardedConversationRealizer(ResponseRenderer):
-    """Use one wording proposal only when deterministic policy permits it."""
+    """Use one wording proposal only when deterministic policy permits it.
+
+    Slice 58B.4 — exposes per-render diagnostic snapshot via
+    `last_metrics` for the dev trace sink. Fields are typed, bounded,
+    and never carry credentials, raw prompts, or chain-of-thought.
+    """
 
     def __init__(
         self,
@@ -40,29 +45,63 @@ class GuardedConversationRealizer(ResponseRenderer):
         self._provider = provider
         self._fallback = fallback_renderer
         self._policy = policy
+        self.last_metrics: dict = {}
 
     def render(self, render_input: ResponseRenderInput) -> RenderedResponse:
+        metrics: dict = {
+            "eligible": False,
+            "called": False,
+            "candidate_present": False,
+            "candidate_text": None,
+            "validation_status": "not_called",
+            "rejection_reason": None,
+            "provider_failure_kind": None,
+            "deterministic_fallback_used": True,
+        }
+        self.last_metrics = metrics
         effective_input = replace(
             render_input,
             identity_disclosure_statement=self._policy.identity_statement,
         )
         if not _may_realize(effective_input):
+            metrics["rejection_reason"] = "not_eligible"
             return self._fallback.render(effective_input)
+        metrics["eligible"] = True
         value = _input(effective_input, self._policy)
+        metrics["called"] = True
         try:
             candidate = self._provider.realize(value)
-        except (RealizationError, TimeoutError, TypeError, ValueError):
+        except RealizationError as exc:
+            metrics["provider_failure_kind"] = getattr(exc, "kind", None).__class__.__name__ if getattr(exc, "kind", None) is not None else "RealizationError"
+            # exc.kind is RealizationFailureKind enum — stringify safely
+            try:
+                metrics["provider_failure_kind"] = exc.kind.value
+            except Exception:
+                metrics["provider_failure_kind"] = "unknown"
+            metrics["validation_status"] = "provider_failed"
             return self._fallback.render(effective_input)
+        except (TimeoutError, TypeError, ValueError) as exc:
+            metrics["provider_failure_kind"] = type(exc).__name__
+            metrics["validation_status"] = "provider_failed"
+            return self._fallback.render(effective_input)
+        if isinstance(candidate, str):
+            metrics["candidate_present"] = True
+            metrics["candidate_text"] = candidate[:300]
         try:
             text = validate_realization(candidate, value)
             rendered = validate_rendered_text(text, effective_input)
+            metrics["validation_status"] = "accepted"
+            metrics["deterministic_fallback_used"] = False
             _record_validation(self._provider, True)
             return rendered
-        except (
-            RealizationValidationError,
-            TypeError,
-            ValueError,
-        ):
+        except RealizationValidationError as exc:
+            metrics["validation_status"] = "rejected"
+            metrics["rejection_reason"] = str(exc)[:200]
+            _record_validation(self._provider, False)
+            return self._fallback.render(effective_input)
+        except (TypeError, ValueError) as exc:
+            metrics["validation_status"] = "rejected"
+            metrics["rejection_reason"] = f"{type(exc).__name__}: {str(exc)[:160]}"
             _record_validation(self._provider, False)
             return self._fallback.render(effective_input)
 

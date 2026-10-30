@@ -1121,11 +1121,13 @@ class ProductionTurnProcessor(TurnProcessor):
         self._emit_dev_trace_safely(
             turn=turn, slice_two=slice_two, slice_three=slice_three,
             plan=plan, output=output,
+            realization_metrics=_extract_realization_metrics(self._renderer),
         )
         return output
 
     def _emit_dev_trace_safely(
         self, *, turn, slice_two, slice_three, plan, output,
+        realization_metrics=None,
     ) -> None:
         """Opt-in trace emission that NEVER corrupts the live turn.
 
@@ -1146,6 +1148,7 @@ class ProductionTurnProcessor(TurnProcessor):
                 plan=plan,
                 output=output,
                 reasoning_calls=self._reasoning_calls,
+                realization_metrics=realization_metrics,
             )
         except Exception as exc:
             self._emit_dev_trace_error_safely(sink, exc, phase="build")
@@ -1705,6 +1708,27 @@ def _strategy_shaped_need(base: ExplanationNeed, strategy):
     return base
 
 
+def _extract_realization_metrics(renderer) -> dict | None:
+    """Walk one level of renderer wrapping to find GuardedConversation
+    Realizer's `last_metrics`. StrategyAwareResponseRenderer wraps the
+    realizer in dev composition; the realizer wraps the deterministic
+    fallback. Return None when no live realizer is in the chain.
+    """
+    candidate = renderer
+    for _ in range(4):
+        if candidate is None:
+            return None
+        last_metrics = getattr(candidate, "last_metrics", None)
+        if isinstance(last_metrics, dict):
+            # Copy to avoid handing the live mutable dict to the sink
+            return dict(last_metrics)
+        inner = getattr(candidate, "_inner", None) or getattr(candidate, "_wrapped", None)
+        if inner is None:
+            inner = getattr(candidate, "_renderer", None)
+        candidate = inner
+    return None
+
+
 def _build_dev_trace(
     *,
     turn,
@@ -1713,6 +1737,7 @@ def _build_dev_trace(
     plan,
     output,
     reasoning_calls: int,
+    realization_metrics: dict | None = None,
 ) -> dict:
     """Build a bounded structured dev-trace record for one turn.
 
@@ -1785,4 +1810,8 @@ def _build_dev_trace(
         "authoritative_result": _enum(output.pipeline_outcome),
         "conversation_terminal": bool(output.conversation_terminal),
         "rendered_text": output.rendered_response.text[:300],
+        # Slice 58B.4 — realization pass diagnostics so an operator can
+        # tell live-Gemini-wording from deterministic-fallback-wording
+        # at a glance.
+        "realization": realization_metrics,
     }

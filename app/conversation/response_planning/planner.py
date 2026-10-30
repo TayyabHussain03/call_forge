@@ -372,6 +372,13 @@ class ResponsePlanner:
             explanation_concept_id=planning_input.explanation_concept_id,
             prior_explanation_depth=planning_input.prior_explanation_depth,
             participant_reference_id=planning_input.participant_reference_id,
+            # Slice 58B.4 — forward the deterministic approved action so
+            # the deterministic renderer can offer action-specific prose
+            # fallbacks (e.g. a natural greeting for GREET) instead of
+            # falling to the generic "How would you like to continue?"
+            # when the live realization provider returns something the
+            # validator cannot accept.
+            approved_action=planning_input.approved_action,
         )
 
 

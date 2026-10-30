@@ -155,7 +155,12 @@ def test_uncertain_addressee_forces_short_clarification_and_holds_context() -> N
     assert plan.clarification_required
     assert plan.question_strategy == QuestionStrategy.CONFIRM_ADDRESSEE
     assert plan.pending_intent == _pending()
-    assert not hasattr(plan, "approved_action")
+    # Slice 58B.4 — ResponsePlan now carries the ActionValidator-
+    # approved action so the deterministic renderer can offer typed
+    # action-specific prose fallbacks. The field is populated from
+    # ResponsePlanningInput.approved_action; it is not used for
+    # business decisions.
+    assert hasattr(plan, "approved_action")
 
 
 def test_confirmed_not_for_agent_ignores_utterance_and_preserves_prior_context() -> None:

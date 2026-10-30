@@ -174,7 +174,14 @@ def _compose(render_input: ResponseRenderInput) -> str:
     elif goal == ConversationMove.CLARIFY_MEANING:
         sentences.append("Could you clarify what you mean so I respond accurately?")
     else:
-        sentences.extend(fact_sentences or ["How would you like to continue?"])
+        # Slice 58B.4 — typed action-specific deterministic fallback.
+        # When the live realization provider returns an unacceptable
+        # candidate (or fails outright) and the planner emitted a
+        # generic COMMUNICATE_RESULT goal for an executed GREET, the
+        # previous generic "How would you like to continue?" discarded
+        # the approved action's semantics. Use the trusted
+        # ActionValidator-approved action to realize GREET explicitly.
+        sentences.extend(fact_sentences or [_typed_action_fallback(plan)])
 
     if plan.question_strategy == QuestionStrategy.ANSWER_THEN_FOLLOW_UP:
         sentences.append("What part would be most useful to clarify next?")
@@ -424,6 +431,28 @@ def _as_sentence(value: str) -> str:
 
 def _missing_fact_text() -> str:
     return "I don't have enough confirmed detail to answer that accurately."
+
+
+def _typed_action_fallback(plan) -> str:
+    """Deterministic action-specific prose fallback.
+
+    Slice 58B.4 — when the generic COMMUNICATE_RESULT branch is reached
+    with no grounded fact_sentences AND the live realization provider
+    was unavailable or rejected, read the ActionValidator-approved
+    action from the plan and realize that action deterministically.
+    GREET must still greet; other actions degrade to the historical
+    neutral prompt. Keep sentences short + plan-faithful; no language-
+    specific generation yet (language is realization's job).
+    """
+    from app.core.constants import AgentAction
+    action = getattr(plan, "approved_action", None)
+    if action == AgentAction.GREET:
+        return "Hi, thanks for taking a moment to chat."
+    if action == AgentAction.ASK_IDENTITY:
+        return "Could I confirm who I'm speaking with?"
+    if action == AgentAction.INTRODUCE_REASON:
+        return "I'm reaching out briefly about your business."
+    return "How would you like to continue?"
 
 
 def _stable_variant(seed: str, count: int) -> int:
