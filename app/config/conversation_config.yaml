@@ -58,7 +58,22 @@ response_policy:
 # ---------------------------------------------------------------------------
 fallbacks:
   # Per-state recovery jab reject hua ho (missing prereq / not eligible).
+  # Slice 58B.5 — added non-terminal recoveries for conversational states.
+  # Previously these fell through to `default: end_call` and silently
+  # terminated the session on a recoverable action rejection (e.g. a
+  # second greeting after the first). An ordinary conversational
+  # misstep must never silently become a terminal END_CALL — explicit
+  # terminal action, DNC, or NOT_INTERESTED are the only valid
+  # terminal paths.
   by_state:
+    greeting: { action: ask_identity, response_key: safe_close }
+    identify_person: { action: introduce_reason, response_key: safe_close }
+    introduce: { action: introduce_reason, response_key: safe_close }
+    reason_for_call: { action: introduce_reason, response_key: safe_close }
+    listen: { action: answer_question, response_key: safe_close }
+    handle_question: { action: answer_question, response_key: safe_close }
+    identify_decision_maker: { action: introduce_reason, response_key: safe_close }
+    explore_alternative: { action: answer_question, response_key: safe_close }
     collect_email: { action: ask_email, response_key: repeat_email }
     confirm_contact: { action: confirm_contact, response_key: confirm_again }
     schedule_callback: { action: schedule_callback, response_key: clarify_callback_time }

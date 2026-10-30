@@ -193,6 +193,14 @@ class TurnDecisionTrace:
     authority_tier: AuthorityTier | None = None
     action_confidence: float | None = None
     notes: str | None = None
+    # Slice 58B.5 — typed BrainProposal fields on the trace so dev
+    # diagnosis can tell the exact action Gemini proposed before scope/
+    # authority classification. All three are None on paths where no
+    # proposal was obtained (provider failure, no_action, pre-Brain
+    # pipeline stop). Enum values; no raw text, no chain-of-thought.
+    proposed_action: AgentAction | None = None
+    detected_intent: object | None = None
+    topic_category: object | None = None
 
 
 @dataclass(frozen=True)
@@ -545,6 +553,10 @@ class BrainOrchestrator:
             action_confidence=proposal.action_confidence,
             scope_policy_id=scope.policy_id,
             authority_policy_id=authority.policy_id,
+            # Slice 58B.5 — surface the typed proposal fields on the trace.
+            proposed_action=proposal.proposed_action,
+            detected_intent=proposal.detected_intent,
+            topic_category=proposal.topic_category,
         )
         if authority.tier == AuthorityTier.HUMAN_APPROVAL_REQUIRED:
             return self._brain_result(
@@ -678,6 +690,10 @@ class BrainOrchestrator:
         effective_bounds: EffectiveAuthorityBounds | None = None,
         scope_policy_id: str | None = None,
         authority_policy_id: str | None = None,
+        # Slice 58B.5 — typed BrainProposal fields on the trace.
+        proposed_action: AgentAction | None = None,
+        detected_intent: object | None = None,
+        topic_category: object | None = None,
     ) -> TurnResult:
         trace = TurnDecisionTrace(
             stage_outcome=outcome,
@@ -689,6 +705,9 @@ class BrainOrchestrator:
             authority_tier=authority_tier,
             action_confidence=action_confidence,
             notes=notes,
+            proposed_action=proposed_action,
+            detected_intent=detected_intent,
+            topic_category=topic_category,
         )
         return TurnResult(
             outcome=outcome,

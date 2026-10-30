@@ -1110,6 +1110,23 @@ class ProductionTurnProcessor(TurnProcessor):
         # inside the atomic transaction) captures the updated coverage.
         # Monotonicity is preserved by DiscussionCoverageState.depth_for().
         self._auto_advance_discussion_coverage(turn, plan)
+        # Slice 58B.5 — terminal/clarification consistency invariant (§25).
+        # A terminal turn must not ask the user a follow-up question — the
+        # session has ended, so clarification is semantically impossible.
+        # If the planner emitted a safe-recovery plan AND execution landed
+        # terminal (e.g. unexpected FallbackEngine terminal path), clear
+        # the clarification request so the renderer does not produce a
+        # question appended to a terminal response.
+        if terminal and (
+            plan.clarification_required
+            or plan.question_strategy != QuestionStrategy.NONE
+        ):
+            from dataclasses import replace as _replace
+            plan = _replace(
+                plan,
+                clarification_required=False,
+                question_strategy=QuestionStrategy.NONE,
+            )
         output = CoordinatedTurnOutput(
             turn.turn_id,
             plan,
@@ -1780,6 +1797,10 @@ def _build_dev_trace(
             "action_confidence": t.action_confidence if t is not None else None,
             "notes": t.notes if t is not None else None,
             "priority_action": _enum(t.priority_action) if t is not None else None,
+            # Slice 58B.5 — typed BrainProposal fields.
+            "proposed_action": _enum(getattr(t, "proposed_action", None)) if t is not None else None,
+            "detected_intent": _enum(getattr(t, "detected_intent", None)) if t is not None else None,
+            "topic_category": _enum(getattr(t, "topic_category", None)) if t is not None else None,
         },
         "slice_three": {
             "outcome": _enum(s3.outcome) if s3 is not None else None,

@@ -106,35 +106,80 @@ class GeminiRealizationAdapter(LLMProviderAdapter):
         return _parse_response(response)
 
 
+_MAX_REALIZATION_TEXT_LEN = 2000
+
+
 def _parse_response(response: object) -> LLMProviderResponse:
+    """Slice 58B.5 — resilient parser.
+
+    Gemini's structured-output response surface is model- and SDK-
+    version-sensitive. The request-side strict schema
+    (`response_json_schema` + `additionalProperties: false`) tells
+    Gemini what we want, but the response can arrive in three shapes:
+
+    1. Clean JSON matching the schema: `{"text": "Hi."}`
+    2. JSON with extra envelope keys: `{"text": "Hi.", "metadata": {...}}`
+    3. Plain prose: `Hi.` (when the model partially drops JSON mode)
+
+    We accept all three — extracting `text` cleanly where possible,
+    treating raw prose as the realized text when JSON parsing fails.
+    `MALFORMED_RESPONSE` now fires only when the response carries no
+    usable text at all. Downstream `validate_realization` continues
+    to enforce service/claim/length invariants on whatever we extract.
+    """
     raw = getattr(response, "text", None)
-    if not isinstance(raw, (str, bytes)):
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RealizationError(
+                "Gemini returned non-UTF-8 response",
+                RealizationFailureKind.MALFORMED_RESPONSE,
+            ) from exc
+    if not isinstance(raw, str) or not raw.strip():
         raise RealizationError(
-            "Gemini returned no structured response",
+            "Gemini returned no response text",
             RealizationFailureKind.MALFORMED_RESPONSE,
         )
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+
+    text = _extract_realization_text(raw)
+    if text is None:
         raise RealizationError(
-            "Gemini returned malformed JSON",
-            RealizationFailureKind.MALFORMED_RESPONSE,
-        ) from exc
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != {"text"}
-        or not isinstance(payload["text"], str)
-    ):
-        raise RealizationError(
-            "Gemini response schema is invalid",
+            "Gemini response has no usable realization text",
             RealizationFailureKind.MALFORMED_RESPONSE,
         )
     usage = getattr(response, "usage_metadata", None)
     return LLMProviderResponse(
-        payload["text"],
+        text[:_MAX_REALIZATION_TEXT_LEN],
         _optional_count(usage, "prompt_token_count"),
         _optional_count(usage, "candidates_token_count"),
     )
+
+
+def _extract_realization_text(raw: str) -> str | None:
+    """Return the realization text from the three accepted response shapes.
+
+    Returns None only when NOTHING usable is present.
+    """
+    stripped = raw.strip()
+    # Shape 3: plain prose that doesn't even look like JSON — accept it
+    # as the realized text directly. Any `{` or `[` indicates JSON intent.
+    if not stripped.startswith("{") and not stripped.startswith("["):
+        return stripped
+    try:
+        payload = json.loads(stripped)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Shape 3 (edge): looks like JSON but isn't valid — fall back to
+        # raw prose if any non-brace content exists. Otherwise fail.
+        return stripped if any(ch.isalpha() for ch in stripped) else None
+    # Shape 1 or 2: dict with .text — accept.
+    if isinstance(payload, dict):
+        candidate = payload.get("text")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+        return None
+    # Shape unusual: list or scalar JSON — reject.
+    return None
 
 
 def _optional_count(value: object, name: str) -> int | None:

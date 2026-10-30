@@ -204,7 +204,10 @@ def test_provider_failures_are_typed_without_retry(  # type: ignore[no-untyped-d
 
 @pytest.mark.parametrize(
     "raw",
-    ["not json", "{}", '{"text": 1}', '{"text":"okay","extra":true}', "[]"],
+    # Slice 58B.5 — the parser is now tolerant to extra envelope keys
+    # ("extra":true) and accepts non-JSON prose as realized text. Only
+    # inputs that carry no usable text at all remain MALFORMED.
+    ["{}", '{"text": 1}', "[]", '{"text": null}', ""],
 )
 def test_malformed_provider_response_is_rejected(raw: str) -> None:
     models = _Models(SimpleNamespace(text=raw))
