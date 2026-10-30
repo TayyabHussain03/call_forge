@@ -90,6 +90,11 @@ class GeminiRealizationAdapter(LLMProviderAdapter):
                         "required": ["text"],
                         "additionalProperties": False,
                     },
+                    # Slice 58B — same contract as the reasoning adapter.
+                    # This realization adapter is stateless and exposes no
+                    # tools; explicitly disable AFC so google-genai does
+                    # not emit the Chat.send_message migration warning.
+                    "automatic_function_calling": {"disable": True},
                 },
             )
         except BaseException as exc:

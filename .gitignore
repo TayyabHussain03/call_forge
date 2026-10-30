@@ -30,3 +30,8 @@ data/*.sqlite3
 .ruff_cache/
 htmlcov/
 .coverage
+
+
+dev-ui.sqlite3
+dev-ui.sqlite3-shm
+dev-ui.sqlite3-wal

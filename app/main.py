@@ -52,6 +52,7 @@ from app.leads.contracts import (
 
 from app.llm.provider_factory import create_reasoning_provider
 from app.llm.providers.reasoning_provider import ReasoningProvider
+from app.llm.realization_factory import create_realization_renderer
 
 from app.persistence.sqlite.connection import SqliteConnection
 
@@ -111,7 +112,19 @@ class DevTurnFactory:
             authority_validator=AuthorityPolicyValidator(),
         )
 
-        renderer = DeterministicResponseRenderer()
+        # Slice 58B — live realization in dev. The deterministic
+        # renderer stays as the guarded fallback: provider failures,
+        # malformed Gemini responses, and validation rejections all
+        # fall back to it. Strategy-aware wrapper remains OUTSIDE the
+        # realizer so simplify/deepen/recap prefixes are added AFTER
+        # Gemini has produced bounded prose. Only AUTHORITY_APPROVED +
+        # ADDRESSED_TO_AGENT turns reach Gemini (`_may_realize`); every
+        # other path uses the deterministic renderer directly.
+        fallback_renderer = DeterministicResponseRenderer()
+        renderer = create_realization_renderer(
+            settings,
+            fallback_renderer=fallback_renderer,
+        )
 
         if self._facade is not None:
             renderer = self._facade.wrap_renderer(renderer)
