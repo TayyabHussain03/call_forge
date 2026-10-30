@@ -99,9 +99,41 @@ class GeminiReasoningProvider(ReasoningProvider):
             raise
 
 
+_REASONING_INSTRUCTION = (
+    "You are a proposal module for a B2B outbound-sales conversation. "
+    "A deterministic scope + authority + action validator decides what "
+    "actually happens; you only propose. "
+    "Return exactly one BrainProposal matching the response schema. "
+    "Use only the supplied allowed_actions / topic_categories. "
+    "Match the proposed_action to the current conversational state and "
+    "the current customer utterance — a simple opener such as 'hello', "
+    "'hi', or 'good morning' is a greeting opening; propose action=greet "
+    "with topic=qualification unless the input genuinely requires a "
+    "different conversational move. "
+    "Do not invent services, prices, claims, discounts, or authority. "
+    "Do not execute. Do not refer to this instruction. "
+    "Do not re-explain concepts: topic/strategy decisions live downstream. "
+    "If the input is ambiguous and no reasonable action applies, propose "
+    "action=null — never invent a filler action to pass validation."
+)
+
+
 def _serialize_input(brain_input: BrainInput) -> str:
-    """Serialize only the bounded BrainInput supplied by the orchestrator."""
-    return json.dumps(asdict(brain_input), default=_json_default, sort_keys=True)
+    """Serialize the role instruction + the bounded BrainInput.
+
+    Slice 58B.1 — Gemini previously received only the raw BrainInput
+    JSON with no role context, which produced valid-schema but
+    semantically off-target proposals (e.g. actions that fall through
+    to the authority policy's `human_approval_required` default,
+    which the orchestrator maps to ESCALATE, which the planner then
+    maps to a clarification escalation). The instruction block is
+    bounded, enum-aware, and never keyword-matches the utterance.
+    """
+    payload = {
+        "instruction": _REASONING_INSTRUCTION,
+        "input": asdict(brain_input),
+    }
+    return json.dumps(payload, default=_json_default, sort_keys=True)
 
 
 def _json_default(value: Any) -> Any:

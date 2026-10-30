@@ -144,12 +144,17 @@ class TestAfcDisabled:
         assert models.kwargs["model"] == "gemini-test"
 
     def test_contents_contains_serialized_brain_input(self):
-        """BrainInput is JSON-serialized into `contents` deterministically."""
+        """BrainInput is JSON-serialized into `contents` deterministically.
+
+        Slice 58B.1 nested the input under `.input` and added an
+        `.instruction` role preamble. Fields remain reachable.
+        """
         models, _ = self._call_once()
         raw = models.kwargs["contents"]
         parsed = json.loads(raw)
-        assert parsed["current_utterance"] == "hello"
-        assert parsed["current_state"] == ConversationState.NEW_CALL.value
+        payload = parsed["input"]
+        assert payload["current_utterance"] == "hello"
+        assert payload["current_state"] == ConversationState.NEW_CALL.value
 
     def test_successful_response_parses_to_brain_proposal(self):
         _, proposal = self._call_once()
