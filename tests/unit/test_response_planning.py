@@ -236,10 +236,17 @@ def test_safety_results_have_deterministic_communication_plans(
     result: AuthoritativeResultKind,
 ) -> None:
     plan = ResponsePlanner().plan(_input(authoritative_result=result))
+    # Slice 58B.8 — FALLBACK + a non-terminal approved_action now emits
+    # action-specific COMMUNICATE_RESULT (so ASK_IDENTITY etc. fallbacks
+    # don't collapse into generic "Could you clarify that for me?"). The
+    # pre-existing _input helper passes approved_action=ANSWER_QUESTION
+    # which is a valid non-terminal recovery action, so FALLBACK now
+    # correctly takes the action-specific branch.
     assert plan.communicative_goal in {
         ConversationMove.SAFE_RECOVERY,
         ConversationMove.REDIRECT_SAFELY,
         ConversationMove.ACKNOWLEDGE_ESCALATION,
+        ConversationMove.COMMUNICATE_RESULT,
     }
 
 

@@ -132,6 +132,14 @@ def _compose(render_input: ResponseRenderInput) -> str:
     if render_input.authoritative_result == AuthoritativeResultKind.REDIRECT:
         return "I can't confirm that here, but I can help with the relevant next step."
     if render_input.authoritative_result == AuthoritativeResultKind.FALLBACK:
+        # Slice 58B.8 — when the FallbackEngine selected a specific
+        # non-terminal recovery action, realize that action rather than
+        # discarding its semantics with a generic clarification. The
+        # Slice 58B.4 `_typed_action_fallback` dispatches on
+        # `plan.approved_action` (ASK_IDENTITY, INTRODUCE_REASON, …).
+        typed = _typed_action_fallback(plan)
+        if typed and typed != "How would you like to continue?":
+            return typed
         return "I may have missed that. Could you clarify what you'd like help with?"
 
     if render_input.identity_disclosure_required:

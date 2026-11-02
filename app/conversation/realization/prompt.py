@@ -45,6 +45,16 @@ def serialize_llm_realization_prompt(value: LLMRealizationPrompt) -> str:
                 "Follow context.plan.communicative_goal, respect "
                 "context.plan.response_length, and preserve the plan's "
                 "addressee_status and acknowledgement. "
+                # Slice 58B.8 — strengthened question-strategy fidelity.
+                # Groq (and other providers) sometimes append a conversational "
+                # question such as 'How can I assist you today?' even when "
+                # context.plan.question_strategy is 'none'. The deterministic
+                # validator correctly rejects these, but the prompt must say
+                # so explicitly to minimise rejection + fallback cycles.
+                "If context.plan.question_strategy is 'none' you must NOT ask "
+                "a question of any kind — no clarifying question, no "
+                "follow-up, no invitation to choose, no rhetorical question. "
+                "Realize ONLY the approved conversational move. "
                 "Ask the user a clarifying question ONLY if "
                 "context.plan.clarification_required is true; otherwise do not "
                 "request additional detail even if the plan is terse. "

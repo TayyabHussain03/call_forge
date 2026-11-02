@@ -140,6 +140,26 @@ class ResponsePlanner:
     ) -> ResponsePlan | None:
         result = planning_input.authoritative_result
         if result == AuthoritativeResultKind.FALLBACK:
+            # Slice 58B.8 — preserve fallback semantics. The FallbackEngine
+            # may have selected a valid non-terminal recovery action
+            # (ASK_IDENTITY, INTRODUCE_REASON, ANSWER_QUESTION, ASK_EMAIL,
+            # CONFIRM_CONTACT, SCHEDULE_CALLBACK). Collapsing every FALLBACK
+            # into SAFE_RECOVERY + CLARIFY_CURRENT_INPUT discarded that
+            # authoritative recovery action. For a non-terminal typed
+            # recovery action, emit action-specific semantics; the renderer's
+            # Slice 58B.4 `_typed_action_fallback` dispatches on
+            # `plan.approved_action` to realize ASK_IDENTITY / INTRODUCE_
+            # REASON etc. Generic SAFE_RECOVERY stays for truly unresolved
+            # recovery (no approved_action).
+            if _is_non_terminal_recovery_action(planning_input.approved_action):
+                return self._build(
+                    planning_input,
+                    ConversationMove.COMMUNICATE_RESULT,
+                    ResponseLength.SHORT,
+                    QuestionStrategy.NONE,
+                    handling=InterruptionHandling.HOLD_PRIOR_CONTEXT,
+                    pending=pending,
+                )
             return self._build(
                 planning_input,
                 ConversationMove.SAFE_RECOVERY,
@@ -435,6 +455,29 @@ def _apply_re_explanation_length(
             return desired
         return current_length
     return desired
+
+
+def _is_non_terminal_recovery_action(action) -> bool:
+    """Slice 58B.8 — True when the FallbackEngine selected a specific
+    non-terminal recovery action whose semantics the planner should
+    preserve. END_CALL / MARK_DNC are explicitly terminal and belong
+    to their existing deterministic paths — they must NOT reach this
+    non-terminal branch.
+    """
+    from app.core.constants import AgentAction
+    if action is None:
+        return False
+    return action in {
+        AgentAction.ASK_IDENTITY,
+        AgentAction.INTRODUCE_REASON,
+        AgentAction.ANSWER_QUESTION,
+        AgentAction.ASK_EMAIL,
+        AgentAction.CONFIRM_CONTACT,
+        AgentAction.CLARIFY_CONTACT,
+        AgentAction.SCHEDULE_CALLBACK,
+        AgentAction.OFFER_SERVICE,
+        AgentAction.GREET,
+    }
 
 
 def _ordinary_length(need: ExplanationNeed) -> ResponseLength:
