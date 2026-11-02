@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # ── LLM ──
     llm_provider: str = "llm.gemini"
     gemini_api_key: str = Field(default="", description="Gemini API key")
+    # Slice 58B.7 — Groq alternate provider. Only read when
+    # LLM_PROVIDER is `groq` or `llm.groq`. Never printed, never
+    # persisted, never logged.
+    groq_api_key: str = Field(default="", description="Groq API key")
     llm_model: str = "gemini-flash-latest"
     llm_timeout_seconds: float = 15.0
     llm_temperature: float = Field(default=0.2, ge=0, le=2)

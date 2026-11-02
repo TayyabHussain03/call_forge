@@ -25,6 +25,24 @@ def create_reasoning_provider(settings: Settings) -> ReasoningProvider:
             timeout_seconds=settings.llm_timeout_seconds,
         )
 
+    # Slice 58B.7 — Groq alternate provider. Fail-closed on missing key.
+    # No automatic Gemini fallback and no silent mock substitution; the
+    # operator must set GROQ_API_KEY explicitly for groq to run.
+    if provider in {"groq", "llm.groq"}:
+        if not settings.groq_api_key.strip():
+            raise ValueError(
+                "GROQ_API_KEY is required when LLM_PROVIDER=groq"
+            )
+        # Import lazily so Gemini-only deployments do not need the
+        # Groq SDK installed (Slice 58B.7 §45).
+        from app.llm.groq_provider import GroqReasoningProvider
+
+        return GroqReasoningProvider(
+            model=settings.llm_model,
+            api_key=settings.groq_api_key,
+            timeout_seconds=settings.llm_timeout_seconds,
+        )
+
     raise UnsupportedLLMProviderError(
         f"Unsupported LLM provider: {settings.llm_provider!r}"
     )
